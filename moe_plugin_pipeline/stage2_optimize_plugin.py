@@ -161,8 +161,26 @@ class MoEPluginOptimizer:
                     # Get expert prediction
                     expert_output = model(batch_data)
                     
+                    # Handle BalPoE model output (can be dict or tensor)
+                    if isinstance(expert_output, dict):
+                        # BalPoE returns dict with 'logits' key containing individual expert logits
+                        if 'logits' in expert_output:
+                            # Get individual expert logits (shape: [batch_size, num_experts, num_classes])
+                            all_expert_logits = expert_output['logits']
+                            # Extract specific expert based on name
+                            expert_idx = {'head_expert': 0, 'balanced_expert': 1, 'tail_expert': 2}[name]
+                            expert_logits = all_expert_logits[:, expert_idx, :]  # [batch_size, num_classes]
+                        elif 'output' in expert_output:
+                            # Fallback to averaged output
+                            expert_logits = expert_output['output']
+                        else:
+                            # If no expected keys, use the first tensor value
+                            expert_logits = list(expert_output.values())[0]
+                    else:
+                        expert_logits = expert_output
+                    
                     # Get probabilities
-                    expert_probs = torch.softmax(expert_output, dim=1)
+                    expert_probs = torch.softmax(expert_logits, dim=1)
                     expert_predictions[name].append(expert_probs.cpu())
         
         # Combine predictions
