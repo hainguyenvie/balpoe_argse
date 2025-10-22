@@ -53,7 +53,7 @@ moe_plugin_pipeline/
 ├── STAGE1_SUMMARY.md               # Stage 1 summary
 ├── STAGE2_SUMMARY.md               # Stage 2 summary
 ├── STAGE3_SUMMARY.md               # Stage 3 summary
-├── requirements.txt                 # Dependencies
+├── ../requirements.txt             # Dependencies (root directory)
 └── setup_environment.py           # Environment setup
 ```
 
@@ -61,36 +61,49 @@ moe_plugin_pipeline/
 
 ### 1. Setup Environment
 ```bash
-cd moe_plugin_pipeline
-python setup_environment.py
+# From root directory
+python moe_plugin_pipeline/setup_environment.py
+
+# Or install requirements manually
+pip install -r requirements.txt
 ```
 
 ### 2. Test Setup
 ```bash
+# From moe_plugin_pipeline directory
+cd moe_plugin_pipeline
+
 # Test tất cả stages
 python test_stage1.py
 python test_stage2.py
 python test_stage3.py
+
+# Or test full pipeline
+python test_full_pipeline.py
 ```
 
 ## Cách sử dụng
 
 ### 1. Chạy toàn bộ pipeline
 ```bash
-# Chạy tất cả stages
-python run_full_pipeline.py
+# From root directory
+python moe_plugin_pipeline/run_full_pipeline.py
 
 # Hoặc sử dụng shell script
+cd moe_plugin_pipeline
 ./run_full_pipeline.sh
 
 # Chạy specific stages
-python run_full_pipeline.py --stages 1 2 3
+python moe_plugin_pipeline/run_full_pipeline.py --stages 1 2 3
 ```
 
 ### 2. Chạy từng stage riêng lẻ
 
 #### Stage 1: Train Experts
 ```bash
+# From moe_plugin_pipeline directory
+cd moe_plugin_pipeline
+
 # Sử dụng script
 ./run_stage1.sh
 
@@ -100,6 +113,9 @@ python stage1_train_balpoe.py --config configs/cifar100_ir100_balpoe.json
 
 #### Stage 2: Optimize Plugin
 ```bash
+# From moe_plugin_pipeline directory
+cd moe_plugin_pipeline
+
 # Sử dụng script
 ./run_stage2.sh <experts_dir> <config_file>
 
@@ -111,6 +127,9 @@ python stage2_optimize_plugin.py \
 
 #### Stage 3: Evaluation
 ```bash
+# From moe_plugin_pipeline directory
+cd moe_plugin_pipeline
+
 # Sử dụng script
 ./run_stage3.sh <plugin_checkpoint> <experts_dir> <config_file>
 

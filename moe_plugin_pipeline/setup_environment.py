@@ -48,9 +48,15 @@ def setup_environment():
     
     # 2. Install requirements
     print("\n📦 Installing requirements...")
-    if not run_command("pip install -r requirements.txt", "Installing Python packages"):
-        print("❌ Failed to install requirements. Please install manually:")
-        print("   pip install -r requirements.txt")
+    requirements_path = Path("requirements.txt")
+    if requirements_path.exists():
+        if not run_command("pip install -r requirements.txt", "Installing Python packages"):
+            print("❌ Failed to install requirements. Please install manually:")
+            print("   pip install -r requirements.txt")
+            return False
+    else:
+        print("❌ requirements.txt not found in root directory")
+        print("📝 Please ensure requirements.txt exists in the root directory")
         return False
     
     # 3. Create symlinks to original BalPoE code
