@@ -1,0 +1,45 @@
+{
+    "name": "Plugin_Optimization_Config",
+    "stage": "plugin_optimization",
+    
+    "dataset": {
+        "name": "CIFAR100-LT",
+        "imbalance_ratio": 100,
+        "data_dir": "./data/CIFAR-100",
+        "val_split": 0.2
+    },
+    
+    "group_definition": {
+        "tail_threshold": 20,
+        "head_classes": "samples > 20",
+        "tail_classes": "samples <= 20"
+    },
+    
+    "cs_plugin": {
+        "lambda_0_candidates": [1, 6, 11],
+        "alpha_search_iterations": 10,
+        "weight_search_space": {
+            "w_head": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            "w_balanced": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            "w_tail": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        }
+    },
+    
+    "worst_group_plugin": {
+        "max_iterations": 25,
+        "step_size": 1.0,
+        "initial_group_weights": [0.5, 0.5]
+    },
+    
+    "experts": {
+        "checkpoint_dir": "checkpoints/balpoe_experts/cifar100_ir100",
+        "tau_values": [0, 1.0, 2.0],
+        "expert_names": ["head_expert", "balanced_expert", "tail_expert"]
+    },
+    
+    "output": {
+        "save_dir": "checkpoints/plugin_optimized",
+        "save_parameters": true,
+        "save_predictions": true
+    }
+}
