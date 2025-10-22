@@ -58,7 +58,7 @@
         "save_dir": "saved/cifar100/ir100/bs_e200_tau1.0_bs128_lr0.1",
         "save_period": 100,
         "verbosity": 2, 
-        "monitor": "max val_accuracy"
+        "monitor": "max accuracy"
     },
     "combiner": {
         "type": "Combiner",
