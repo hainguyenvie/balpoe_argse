@@ -101,9 +101,10 @@ class MetricTracker:
             value, n = value
         if self.writer is not None:
             self.writer.log_metrics({key: value}, step=self.step)
-        self._data.total[key] += value * n
-        self._data.counts[key] += n
-        self._data.average[key] = self._data.total[key] / self._data.counts[key]
+        # Fix pandas chained assignment warning
+        self._data.loc[key, 'total'] += value * n
+        self._data.loc[key, 'counts'] += n
+        self._data.loc[key, 'average'] = self._data.loc[key, 'total'] / self._data.loc[key, 'counts']
 
     def avg(self, key):
         return self._data.average[key]

@@ -42,7 +42,8 @@
         }
     },
     "metrics": [
-        "accuracy"
+        "accuracy",
+        "val_accuracy"
     ],
     "lr_scheduler": {
         "type": "CustomLR",
@@ -58,7 +59,7 @@
         "save_dir": "checkpoints/balpoe_experts/cifar100_ir100",
         "save_period": 50,
         "verbosity": 2, 
-        "monitor": "max val_accuracy"
+        "monitor": "max accuracy"
     },
     "combiner": {
         "type": "Combiner",
