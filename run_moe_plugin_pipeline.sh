@@ -1,10 +1,12 @@
 #!/bin/bash
 
-# Run Full MoE-Plugin Pipeline
-# Chạy toàn bộ pipeline từ Stage 1 đến Stage 3
+# MoE-Plugin Pipeline - Run from Root Directory
+# Chạy toàn bộ pipeline từ root directory
 
 echo "🚀 MoE-Plugin Pipeline"
 echo "====================="
+echo "📁 Running from root directory"
+echo ""
 
 # Parse arguments
 STAGES="1 2 3"

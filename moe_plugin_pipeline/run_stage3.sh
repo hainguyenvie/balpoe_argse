@@ -51,7 +51,7 @@ echo ""
 echo "🔍 Running Stage 3: Evaluation..."
 echo "=================================="
 
-python stage3_evaluate.py \
+python moe_plugin_pipeline/stage3_evaluate.py \
     --plugin_checkpoint "$PLUGIN_CHECKPOINT" \
     --experts_dir "$EXPERTS_DIR" \
     --config "$CONFIG_FILE" \

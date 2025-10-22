@@ -24,39 +24,6 @@ Pipeline kết hợp **BalPoE (Balanced Product of Calibrated Experts)** với *
 - **Baselines**: BalPoE, Plugin_Single, Plugin_BalPoE_avg
 - **Output**: Plots, tables, và comparison results
 
-## Cấu trúc Files
-
-```
-moe_plugin_pipeline/
-├── stage1_train_balpoe.py          # Stage 1: Train experts
-├── stage2_optimize_plugin.py       # Stage 2: Optimize plugin
-├── stage3_evaluate.py               # Stage 3: Evaluation
-├── run_full_pipeline.py             # Run toàn bộ pipeline
-├── run_full_pipeline.sh             # Shell script
-├── configs/                         # Configuration files
-│   ├── cifar100_ir100_balpoe.json  # Stage 1 config
-│   ├── plugin_optimization.json     # Stage 2 config
-│   └── evaluation_config.json       # Stage 3 config
-├── plugin_methods/                  # Plugin optimization logic
-│   └── plugin_optimizer.py
-├── evaluation/                     # Evaluation framework
-│   └── moe_plugin_evaluator.py
-├── test_stage1.py                  # Test Stage 1
-├── test_stage2.py                  # Test Stage 2
-├── test_stage3.py                  # Test Stage 3
-├── run_stage1.sh                   # Run Stage 1
-├── run_stage2.sh                   # Run Stage 2
-├── run_stage3.sh                   # Run Stage 3
-├── STAGE1_GUIDE.md                 # Stage 1 guide
-├── STAGE2_GUIDE.md                 # Stage 2 guide
-├── STAGE3_GUIDE.md                 # Stage 3 guide
-├── STAGE1_SUMMARY.md               # Stage 1 summary
-├── STAGE2_SUMMARY.md               # Stage 2 summary
-├── STAGE3_SUMMARY.md               # Stage 3 summary
-├── ../requirements.txt             # Dependencies (root directory)
-└── setup_environment.py           # Environment setup
-```
-
 ## Cài đặt
 
 ### 1. Setup Environment
@@ -139,7 +106,7 @@ python moe_plugin_pipeline/stage3_evaluate.py \
 
 ## Configuration
 
-### 1. Stage 1 Config (`configs/cifar100_ir100_balpoe.json`)
+### 1. Stage 1 Config (`moe_plugin_pipeline/configs/cifar100_ir100_balpoe.json`)
 ```json
 {
     "name": "Imbalance_CIFAR100LT_IR100_BalPoE_Experts",
@@ -186,7 +153,7 @@ python moe_plugin_pipeline/stage3_evaluate.py \
 }
 ```
 
-### 2. Stage 2 Config (`configs/plugin_optimization.json`)
+### 2. Stage 2 Config (`moe_plugin_pipeline/configs/plugin_optimization.json`)
 ```json
 {
     "name": "Plugin_Optimization",
@@ -219,7 +186,7 @@ python moe_plugin_pipeline/stage3_evaluate.py \
 }
 ```
 
-### 3. Stage 3 Config (`configs/evaluation_config.json`)
+### 3. Stage 3 Config (`moe_plugin_pipeline/configs/evaluation_config.json`)
 ```json
 {
     "name": "MoE-Plugin_Evaluation",
@@ -284,7 +251,7 @@ python moe_plugin_pipeline/stage3_evaluate.py \
 ## Troubleshooting
 
 ### 1. Common Issues
-- **Missing dependencies**: Chạy `python setup_environment.py`
+- **Missing dependencies**: Chạy `pip install -r requirements.txt`
 - **Config errors**: Kiểm tra JSON format
 - **Memory issues**: Giảm batch size
 - **Path issues**: Kiểm tra relative paths

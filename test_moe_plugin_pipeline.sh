@@ -1,10 +1,12 @@
 #!/bin/bash
 
-# Run All Tests for MoE-Plugin Pipeline
-# Chạy tất cả tests để kiểm tra pipeline
+# Test MoE-Plugin Pipeline - Run from Root Directory
+# Chạy tất cả tests từ root directory
 
 echo "🧪 MoE-Plugin Pipeline Tests"
 echo "============================"
+echo "📁 Running from root directory"
+echo ""
 
 # Test individual stages
 echo ""
@@ -62,6 +64,6 @@ echo "🎉 All tests completed successfully!"
 echo "✅ MoE-Plugin Pipeline is ready to run!"
 echo ""
 echo "📋 Next Steps:"
-echo "1. Run full pipeline: python run_full_pipeline.py"
-echo "2. Or run individual stages: ./run_stage1.sh, ./run_stage2.sh, ./run_stage3.sh"
+echo "1. Run full pipeline: ./run_moe_plugin_pipeline.sh"
+echo "2. Or run individual stages: ./moe_plugin_pipeline/run_stage1.sh, ./moe_plugin_pipeline/run_stage2.sh, ./moe_plugin_pipeline/run_stage3.sh"
 echo "3. Check results in results/ directory"
