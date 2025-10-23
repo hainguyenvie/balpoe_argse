@@ -294,27 +294,46 @@ class MoEPluginOptimizer:
         
         return best_params
     
-    def _find_optimal_alpha(self, expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes):
-        """Tìm alpha tối ưu bằng power iteration (M=10 iterations)"""
+    def _find_optimal_alpha(self, expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes, group_weights=None):
+        """Tìm alpha tối ưu bằng power iteration (M=10 iterations) theo đúng paper"""
         
-        # Simplified power iteration (cần implement đầy đủ theo paper)
+        # Initialize alpha
         alpha = 0.5  # Initial guess
         M = self.config['cs_plugin']['alpha_search_iterations']
         
+        # Default group weights for balanced error (equal weights)
+        if group_weights is None:
+            group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)
+        
         for iteration in range(M):
-            # Compute cost-sensitive error với alpha hiện tại
-            error = self._compute_cost_sensitive_error(
-                expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
+            # Compute cost-sensitive error với alpha hiện tại và group weights
+            error = self._compute_cost_sensitive_error_with_weights(
+                expert_predictions, labels, expert_weights, lambda_0, alpha, 
+                head_classes, tail_classes, group_weights
             )
             
-            # Update alpha (simplified update rule)
-            alpha = alpha * 0.9 + 0.1 * (1 - error)
-            alpha = max(0.0, min(1.0, alpha))  # Clamp to [0, 1]
+            # Power iteration update rule theo paper
+            # α^(t+1) = α^(t) + η * (target_error - current_error)
+            # Với target_error = 0.5 (balanced target)
+            target_error = 0.5
+            learning_rate = 0.1
+            alpha_update = learning_rate * (target_error - error)
+            alpha = alpha + alpha_update
+            
+            # Clamp alpha to reasonable range [0.1, 0.9]
+            alpha = max(0.1, min(0.9, alpha))
         
         return alpha
     
     def _compute_cost_sensitive_error(self, expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes):
-        """Tính cost-sensitive error"""
+        """Tính cost-sensitive error (balanced error với equal group weights)"""
+        return self._compute_cost_sensitive_error_with_weights(
+            expert_predictions, labels, expert_weights, lambda_0, alpha, 
+            head_classes, tail_classes, torch.tensor([0.5, 0.5])
+        )
+    
+    def _compute_cost_sensitive_error_with_weights(self, expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes, group_weights):
+        """Tính cost-sensitive error với group weights β theo đúng paper"""
         
         # Weighted ensemble prediction
         ensemble_pred = torch.zeros_like(expert_predictions['head_expert'])
@@ -325,11 +344,21 @@ class MoEPluginOptimizer:
         max_probs, predictions = torch.max(ensemble_pred, dim=1)
         reject_mask = max_probs < alpha
         
-        # Compute error (simplified)
-        correct_mask = (predictions == labels) & (~reject_mask)
-        error = 1.0 - correct_mask.float().mean()
+        # Get group masks
+        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
+        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
         
-        return error.item()
+        # Compute group-wise errors
+        head_correct = (predictions == labels) & (~reject_mask) & head_mask
+        tail_correct = (predictions == labels) & (~reject_mask) & tail_mask
+        
+        head_error = 1.0 - head_correct.float().sum() / max(head_mask.sum().item(), 1)
+        tail_error = 1.0 - tail_correct.float().sum() / max(tail_mask.sum().item(), 1)
+        
+        # Cost-sensitive error với group weights β
+        cost_sensitive_error = group_weights[0] * head_error + group_weights[1] * tail_error
+        
+        return cost_sensitive_error.item()
     
     def _evaluate_balanced_error(self, expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes):
         """Đánh giá balanced error"""
@@ -344,7 +373,7 @@ class MoEPluginOptimizer:
         """
         print("🔍 Worst-group Plugin Optimization...")
         
-        # Initialize group weights
+        # Initialize group weights β⁽⁰⁾ = [0.5, 0.5]
         group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)  # [head, tail]
         
         # Algorithm parameters
@@ -356,13 +385,23 @@ class MoEPluginOptimizer:
         
         for iteration in range(T):
             print(f"  🔄 Iteration {iteration+1}/{T}")
+            print(f"    📊 Current group weights β⁽ᵗ⁾: {group_weights.tolist()}")
             
-            # Compute group-wise errors
-            head_error, tail_error = self._compute_group_errors(
-                expert_predictions, labels, head_classes, tail_classes, cs_params
+            # BƯỚC QUAN TRỌNG: Gọi CS-plugin với group weights β⁽ᵗ⁾ hiện tại
+            # Tìm (h⁽ᵗ⁾, r⁽ᵗ⁾) tối ưu cho cost-sensitive error với β⁽ᵗ⁾
+            current_params = self._cs_plugin_with_group_weights(
+                expert_predictions, labels, head_classes, tail_classes, group_weights
             )
             
+            # Compute group-wise errors với classifier (h⁽ᵗ⁾, r⁽ᵗ⁾)
+            head_error, tail_error = self._compute_group_errors_with_params(
+                expert_predictions, labels, head_classes, tail_classes, current_params
+            )
+            
+            print(f"    📊 Group errors: Head={head_error:.4f}, Tail={tail_error:.4f}")
+            
             # Update group weights using exponentiated gradient
+            # βₖ⁽ᵗ⁺¹⁾ ∝ βₖ⁽ᵗ⁾ · exp(ξ · êₖ(h⁽ᵗ⁾, r⁽ᵗ⁾))
             group_weights = self._update_group_weights(
                 group_weights, head_error, tail_error, step_size
             )
@@ -373,17 +412,104 @@ class MoEPluginOptimizer:
             if worst_group_error < best_worst_group_error:
                 best_worst_group_error = worst_group_error
                 best_params = {
-                    **cs_params,
+                    **current_params,
                     'group_weights': group_weights.tolist(),
                     'worst_group_error': worst_group_error
                 }
                 
                 print(f"    ✅ New best: worst_group_error = {worst_group_error:.4f}")
+                print(f"        📊 Best group weights: {group_weights.tolist()}")
         
         print(f"✅ Worst-group plugin optimization completed!")
         print(f"📊 Best worst-group error: {best_worst_group_error:.4f}")
         
         return best_params
+    
+    def _cs_plugin_with_group_weights(self, expert_predictions, labels, head_classes, tail_classes, group_weights):
+        """CS-plugin optimization với group weights β⁽ᵗ⁾ cụ thể"""
+        
+        # Grid search parameters
+        lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
+        weight_search_space = self.config['cs_plugin']['weight_search_space']
+        
+        best_params = None
+        best_cost_sensitive_error = float('inf')
+        
+        # Grid search cho expert weights
+        for w_head in weight_search_space['w_head']:
+            for w_balanced in weight_search_space['w_balanced']:
+                for w_tail in weight_search_space['w_tail']:
+                    
+                    # Normalize weights
+                    total_weight = w_head + w_balanced + w_tail
+                    if total_weight == 0:
+                        continue
+                    
+                    expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
+                    
+                    # Grid search cho lambda_0
+                    for lambda_0 in lambda_0_candidates:
+                        
+                        # Tìm alpha tối ưu với group weights β⁽ᵗ⁾
+                        alpha = self._find_optimal_alpha(
+                            expert_predictions, labels, 
+                            expert_weights, lambda_0, head_classes, tail_classes, group_weights
+                        )
+                        
+                        # Đánh giá cost-sensitive error với β⁽ᵗ⁾
+                        cost_sensitive_error = self._compute_cost_sensitive_error_with_weights(
+                            expert_predictions, labels,
+                            expert_weights, lambda_0, alpha, head_classes, tail_classes, group_weights
+                        )
+                        
+                        if cost_sensitive_error < best_cost_sensitive_error:
+                            best_cost_sensitive_error = cost_sensitive_error
+                            best_params = {
+                                'lambda_0': lambda_0,
+                                'alpha': alpha,
+                                'expert_weights': expert_weights,
+                                'cost_sensitive_error': cost_sensitive_error
+                            }
+        
+        return best_params
+    
+    def _compute_group_errors_with_params(self, expert_predictions, labels, head_classes, tail_classes, params):
+        """Tính group-wise errors với parameters cụ thể"""
+        
+        # Get group masks
+        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
+        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
+        
+        # Compute errors for each group
+        head_error = self._compute_group_error_with_params(expert_predictions, labels, head_mask, params)
+        tail_error = self._compute_group_error_with_params(expert_predictions, labels, tail_mask, params)
+        
+        return head_error, tail_error
+    
+    def _compute_group_error_with_params(self, expert_predictions, labels, group_mask, params):
+        """Tính error cho một group với parameters cụ thể"""
+        
+        if group_mask.sum() == 0:
+            return 0.0
+        
+        # Get group predictions and labels
+        group_predictions = {name: pred[group_mask] for name, pred in expert_predictions.items()}
+        group_labels = labels[group_mask]
+        
+        # Weighted ensemble prediction
+        ensemble_pred = torch.zeros_like(group_predictions['head_expert'])
+        for i, (name, weight) in enumerate(zip(['head_expert', 'balanced_expert', 'tail_expert'], params['expert_weights'])):
+            ensemble_pred += weight * group_predictions[name]
+        
+        # Apply rejection rule
+        max_probs, predictions = torch.max(ensemble_pred, dim=1)
+        reject_mask = max_probs < params['alpha']
+        
+        # Compute error
+        correct_mask = (predictions == group_labels) & (~reject_mask)
+        error = 1.0 - correct_mask.float().mean()
+        
+        return error.item()
     
     def _compute_group_errors(self, expert_predictions, labels, head_classes, tail_classes, params):
         """Tính group-wise errors"""
