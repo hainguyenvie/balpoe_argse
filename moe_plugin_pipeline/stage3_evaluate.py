@@ -537,6 +537,22 @@ class MoEPluginEvaluator:
         print("✅ Evaluation Completed!")
         print(f"📁 Results saved to: {save_dir}")
         
+        # Add risk-coverage evaluation if available
+        if 'risk_coverage_results' in self.plugin_params:
+            print("\n📊 Risk-Coverage Curves Evaluation:")
+            risk_results = self.plugin_params['risk_coverage_results']
+            print(f"📊 Balanced Error AURC: {risk_results['balanced_aurc']:.4f}")
+            print(f"📊 Worst-Group Error AURC: {risk_results['worst_group_aurc']:.4f}")
+            
+            # Add risk-coverage metrics to results
+            results['risk_coverage'] = {
+                'balanced_aurc': risk_results['balanced_aurc'],
+                'worst_group_aurc': risk_results['worst_group_aurc'],
+                'rejection_rates': risk_results['rejection_rates'],
+                'balanced_errors': risk_results['balanced_errors'],
+                'worst_group_errors': risk_results['worst_group_errors']
+            }
+        
         return results, aurc_results
 
 

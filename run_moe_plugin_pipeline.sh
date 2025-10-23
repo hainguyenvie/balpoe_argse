@@ -169,6 +169,18 @@ for stage in $STAGES; do
                 echo "❌ Stage 3 failed!"
                 exit 1
             fi
+            
+            # Plot Risk-Coverage Curves
+            echo "📊 Plotting Risk-Coverage Curves..."
+            python moe_plugin_pipeline/plot_risk_coverage_curves.py \
+                --results_file results/plugin_optimization/risk_coverage_results.json \
+                --save_dir results/plugin_optimization
+            
+            if [ $? -eq 0 ]; then
+                echo "✅ Risk-coverage curves plotted successfully!"
+            else
+                echo "⚠️ Risk-coverage plotting failed (optional)"
+            fi
             ;;
         *)
             echo "❌ Unknown stage: $stage"

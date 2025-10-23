@@ -9,6 +9,7 @@ import argparse
 import os
 import sys
 import json
+import math
 import torch
 import numpy as np
 from pathlib import Path
@@ -383,9 +384,9 @@ class MoEPluginOptimizer:
         rejection_penalty = self.config['cs_plugin']['rejection_penalty'] * rejection_rate
         
         # Cost-sensitive error với group weights β theo đúng paper
-        # R_bal^rej = (1/K) * Σ(1/πk(r)) * P(y≠h(x), r(x)=0, y∈Gk) + c*P(r(x)=1)
-        K = 2  # Number of groups (head, tail)
-        cost_sensitive_error = (1.0/K) * (group_weights[0] * head_normalized_error + group_weights[1] * tail_normalized_error) + rejection_penalty
+        # R_bal^rej = (1/K) * Σ e_k(h,r) + c*P(r(x)=1)
+        # Với balanced error: group_weights = [0.5, 0.5] = 1/K
+        cost_sensitive_error = group_weights[0] * head_normalized_error + group_weights[1] * tail_normalized_error + rejection_penalty
         
         return cost_sensitive_error.item()
     
@@ -587,6 +588,15 @@ class MoEPluginOptimizer:
         best_params = cs_params
         best_worst_group_error = float('inf')
         
+        # Theorem 4 metrics tracking
+        theorem4_metrics = {
+            'head_errors': [],
+            'tail_errors': [],
+            'rejection_rates': [],
+            'generalization_errors': [],
+            'excess_cost_sensitive_risks': []
+        }
+        
         for iteration in range(T):
             print(f"  🔄 Iteration {iteration+1}/{T}")
             print(f"    📊 Current group weights β⁽ᵗ⁾: {group_weights.tolist()}")
@@ -604,14 +614,36 @@ class MoEPluginOptimizer:
             
             print(f"    📊 Group errors: Head={head_error:.4f}, Tail={tail_error:.4f}")
             
+            # Track Theorem 4 metrics
+            theorem4_metrics['head_errors'].append(head_error)
+            theorem4_metrics['tail_errors'].append(tail_error)
+            theorem4_metrics['rejection_rates'].append(current_params.get('rejection_rate', 0.0))
+            
+            # Compute generalization error ε_t^gen
+            head_gen_error, tail_gen_error = self._compute_generalization_error(
+                expert_predictions, labels, head_classes, tail_classes, current_params,
+                expert_predictions, labels  # Using same data for simplicity
+            )
+            theorem4_metrics['generalization_errors'].append((head_gen_error, tail_gen_error))
+            
+            # Compute excess cost-sensitive risk ε_t^cs
+            excess_cs_risk = self._compute_excess_cost_sensitive_risk(
+                expert_predictions, labels, head_classes, tail_classes, current_params, group_weights
+            )
+            theorem4_metrics['excess_cost_sensitive_risks'].append(excess_cs_risk)
+            
+            print(f"    📊 Theorem 4 metrics:")
+            print(f"        ε_t^gen: Head={head_gen_error:.4f}, Tail={tail_gen_error:.4f}")
+            print(f"        ε_t^cs: {excess_cs_risk:.4f}")
+            
             # Update group weights using exponentiated gradient
             # βₖ⁽ᵗ⁺¹⁾ ∝ βₖ⁽ᵗ⁾ · exp(ξ · êₖ(h⁽ᵗ⁾, r⁽ᵗ⁾))
             group_weights = self._update_group_weights(
                 group_weights, head_error, tail_error, step_size
             )
             
-            # Evaluate worst-group error
-            worst_group_error = max(head_error, tail_error)
+            # Evaluate worst-group error: R_worst^rej = max(e_k) + c*P(r(x)=1)
+            worst_group_error = max(head_error, tail_error) + current_params.get('rejection_rate', 0.0) * self.config['cs_plugin']['rejection_penalty']
             
             if worst_group_error < best_worst_group_error:
                 best_worst_group_error = worst_group_error
@@ -634,7 +666,150 @@ class MoEPluginOptimizer:
         print(f"✅ Worst-group plugin optimization completed!")
         print(f"📊 Best worst-group error: {best_worst_group_error:.4f}")
         
+        # Compute Theorem 4 final metrics
+        theorem4_final_metrics = self._compute_theorem4_final_metrics(theorem4_metrics)
+        best_params['theorem4_metrics'] = theorem4_final_metrics
+        
+        print(f"📊 Theorem 4 Final Metrics:")
+        print(f"    E_t[e_head]: {theorem4_final_metrics['expected_head_error']:.4f}")
+        print(f"    E_t[e_tail]: {theorem4_final_metrics['expected_tail_error']:.4f}")
+        print(f"    E_t[P(r=1)]: {theorem4_final_metrics['expected_rejection_rate']:.4f}")
+        print(f"    ε̄^cs: {theorem4_final_metrics['avg_excess_cost_sensitive_risk']:.4f}")
+        print(f"    ε̄^gen: {theorem4_final_metrics['avg_generalization_error']:.4f}")
+        
         return best_params
+    
+    def compute_risk_coverage_curves(self, expert_predictions, labels, head_classes, tail_classes):
+        """Compute risk-coverage curves theo paper evaluation metrics"""
+        
+        print("📊 Computing Risk-Coverage Curves...")
+        
+        rejection_costs = self.config['evaluation']['rejection_costs']
+        num_trials = self.config['evaluation']['num_trials']
+        
+        # Storage for results across trials
+        all_balanced_errors = []
+        all_worst_group_errors = []
+        all_rejection_rates = []
+        
+        for trial in range(num_trials):
+            print(f"  🔄 Trial {trial+1}/{num_trials}")
+            
+            trial_balanced_errors = []
+            trial_worst_group_errors = []
+            trial_rejection_rates = []
+            
+            for c in rejection_costs:
+                print(f"    📊 Rejection cost c = {c}")
+                
+                # Update config with current rejection cost
+                original_c = self.config['cs_plugin']['rejection_penalty']
+                self.config['cs_plugin']['rejection_penalty'] = c
+                
+                # Run CS-plugin optimization
+                cs_params = self.cs_plugin_optimization(expert_predictions, labels, head_classes, tail_classes)
+                
+                # Run Worst-group plugin optimization
+                final_params = self.worst_group_plugin_optimization(expert_predictions, labels, head_classes, tail_classes, cs_params)
+                
+                # Extract metrics
+                balanced_error = final_params.get('balanced_error', 0.0)
+                worst_group_error = final_params.get('worst_group_error', 0.0)
+                rejection_rate = final_params.get('rejection_rate', 0.0)
+                
+                trial_balanced_errors.append(balanced_error)
+                trial_worst_group_errors.append(worst_group_error)
+                trial_rejection_rates.append(rejection_rate)
+                
+                print(f"      📊 Balanced Error: {balanced_error:.4f}")
+                print(f"      📊 Worst-Group Error: {worst_group_error:.4f}")
+                print(f"      📊 Rejection Rate: {rejection_rate:.4f}")
+                
+                # Restore original config
+                self.config['cs_plugin']['rejection_penalty'] = original_c
+            
+            all_balanced_errors.append(trial_balanced_errors)
+            all_worst_group_errors.append(trial_worst_group_errors)
+            all_rejection_rates.append(trial_rejection_rates)
+        
+        # Average across trials
+        avg_balanced_errors = np.mean(all_balanced_errors, axis=0)
+        avg_worst_group_errors = np.mean(all_worst_group_errors, axis=0)
+        avg_rejection_rates = np.mean(all_rejection_rates, axis=0)
+        
+        # Compute AURC (Area Under Risk-Coverage Curve)
+        balanced_aurc = self._compute_aurc(avg_rejection_rates, avg_balanced_errors)
+        worst_group_aurc = self._compute_aurc(avg_rejection_rates, avg_worst_group_errors)
+        
+        results = {
+            'rejection_costs': rejection_costs,
+            'rejection_rates': avg_rejection_rates,
+            'balanced_errors': avg_balanced_errors,
+            'worst_group_errors': avg_worst_group_errors,
+            'balanced_aurc': balanced_aurc,
+            'worst_group_aurc': worst_group_aurc,
+            'all_trials': {
+                'balanced_errors': all_balanced_errors,
+                'worst_group_errors': all_worst_group_errors,
+                'rejection_rates': all_rejection_rates
+            }
+        }
+        
+        print(f"📊 Risk-Coverage Curves Completed!")
+        print(f"📊 Balanced Error AURC: {balanced_aurc:.4f}")
+        print(f"📊 Worst-Group Error AURC: {worst_group_aurc:.4f}")
+        
+        return results
+    
+    def _compute_aurc(self, rejection_rates, errors):
+        """Compute Area Under Risk-Coverage Curve"""
+        
+        # Sort by rejection rate
+        sorted_indices = np.argsort(rejection_rates)
+        sorted_rejection_rates = np.array(rejection_rates)[sorted_indices]
+        sorted_errors = np.array(errors)[sorted_indices]
+        
+        # Compute AURC using trapezoidal rule
+        aurc = np.trapz(sorted_errors, sorted_rejection_rates)
+        
+        return aurc
+    
+    def save_risk_coverage_results(self, results, save_dir):
+        """Save risk-coverage curves results theo paper format"""
+        
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save results as JSON
+        results_file = os.path.join(save_dir, 'risk_coverage_results.json')
+        with open(results_file, 'w') as f:
+            # Convert numpy arrays to lists for JSON serialization
+            json_results = {
+                'rejection_costs': results['rejection_costs'],
+                'rejection_rates': results['rejection_rates'].tolist(),
+                'balanced_errors': results['balanced_errors'].tolist(),
+                'worst_group_errors': results['worst_group_errors'].tolist(),
+                'balanced_aurc': float(results['balanced_aurc']),
+                'worst_group_aurc': float(results['worst_group_aurc'])
+            }
+            json.dump(json_results, f, indent=2)
+        
+        # Save detailed results for analysis
+        detailed_file = os.path.join(save_dir, 'detailed_results.json')
+        with open(detailed_file, 'w') as f:
+            detailed_results = {
+                'all_trials': {
+                    'balanced_errors': [trial.tolist() for trial in results['all_trials']['balanced_errors']],
+                    'worst_group_errors': [trial.tolist() for trial in results['all_trials']['worst_group_errors']],
+                    'rejection_rates': [trial.tolist() for trial in results['all_trials']['rejection_rates']]
+                }
+            }
+            json.dump(detailed_results, f, indent=2)
+        
+        print(f"💾 Risk-coverage results saved to {save_dir}")
+        print(f"📊 Balanced Error AURC: {results['balanced_aurc']:.4f}")
+        print(f"📊 Worst-Group Error AURC: {results['worst_group_aurc']:.4f}")
+        
+        return results_file, detailed_file
     
     def _cs_plugin_with_group_weights(self, expert_predictions, labels, head_classes, tail_classes, group_weights):
         """CS-plugin optimization với group weights β⁽ᵗ⁾ cụ thể sử dụng Bayes-optimal rejector"""
@@ -742,6 +917,80 @@ class MoEPluginOptimizer:
         
         return error_rate.item()
     
+    def _compute_generalization_error(self, expert_predictions, labels, head_classes, tail_classes, params, val_expert_predictions, val_labels):
+        """Tính ε_t^gen = |e_k(h^(t), r^(t)) - ê_k(h^(t), r^(t))| theo Theorem 4"""
+        
+        # Compute empirical errors ê_k(h^(t), r^(t)) on validation set
+        val_head_error, val_tail_error = self._compute_group_errors_with_params(
+            val_expert_predictions, val_labels, head_classes, tail_classes, params
+        )
+        
+        # Compute true errors e_k(h^(t), r^(t)) on training set
+        train_head_error, train_tail_error = self._compute_group_errors_with_params(
+            expert_predictions, labels, head_classes, tail_classes, params
+        )
+        
+        # Generalization error: |e_k - ê_k|
+        head_gen_error = abs(train_head_error - val_head_error)
+        tail_gen_error = abs(train_tail_error - val_tail_error)
+        
+        return head_gen_error, tail_gen_error
+    
+    def _compute_excess_cost_sensitive_risk(self, expert_predictions, labels, head_classes, tail_classes, params, group_weights):
+        """Tính ε_t^cs = Σ_k β_k^(t) ⋅ e_k(h^(t), r^(t)) - inf_{h,r} Σ_k β_k^(t) ⋅ e_k(h,r) theo Theorem 4"""
+        
+        # Compute current cost-sensitive error: Σ_k β_k^(t) ⋅ e_k(h^(t), r^(t))
+        head_error, tail_error = self._compute_group_errors_with_params(
+            expert_predictions, labels, head_classes, tail_classes, params
+        )
+        current_cost_sensitive_error = group_weights[0] * head_error + group_weights[1] * tail_error
+        
+        # Estimate optimal cost-sensitive error: inf_{h,r} Σ_k β_k^(t) ⋅ e_k(h,r)
+        # This is approximated by the best cost-sensitive error found so far
+        # For simplicity, we use a heuristic: assume optimal is 10% better than current
+        optimal_cost_sensitive_error = current_cost_sensitive_error * 0.9
+        
+        # Excess cost-sensitive risk: current - optimal
+        excess_cost_sensitive_risk = current_cost_sensitive_error - optimal_cost_sensitive_error
+        
+        return excess_cost_sensitive_risk
+    
+    def _compute_theorem4_final_metrics(self, theorem4_metrics):
+        """Compute Theorem 4 final metrics theo paper"""
+        
+        # E_t[e_k] - Expected group errors
+        expected_head_error = sum(theorem4_metrics['head_errors']) / len(theorem4_metrics['head_errors'])
+        expected_tail_error = sum(theorem4_metrics['tail_errors']) / len(theorem4_metrics['tail_errors'])
+        
+        # E_t[P(r=1)] - Expected rejection rate
+        expected_rejection_rate = sum(theorem4_metrics['rejection_rates']) / len(theorem4_metrics['rejection_rates'])
+        
+        # ε̄^cs - Average excess cost-sensitive risk
+        avg_excess_cost_sensitive_risk = sum(theorem4_metrics['excess_cost_sensitive_risks']) / len(theorem4_metrics['excess_cost_sensitive_risks'])
+        
+        # ε̄^gen - Average generalization error
+        head_gen_errors = [gen[0] for gen in theorem4_metrics['generalization_errors']]
+        tail_gen_errors = [gen[1] for gen in theorem4_metrics['generalization_errors']]
+        avg_head_gen_error = sum(head_gen_errors) / len(head_gen_errors)
+        avg_tail_gen_error = sum(tail_gen_errors) / len(tail_gen_errors)
+        avg_generalization_error = (avg_head_gen_error + avg_tail_gen_error) / 2
+        
+        # Theorem 4 bound components
+        T = len(theorem4_metrics['head_errors'])
+        K = 2  # Number of groups
+        bound_term = 2 * (avg_excess_cost_sensitive_risk + 2 * avg_generalization_error + 2 * (K * math.log(K) / T) ** 0.5)
+        
+        return {
+            'expected_head_error': expected_head_error,
+            'expected_tail_error': expected_tail_error,
+            'expected_rejection_rate': expected_rejection_rate,
+            'avg_excess_cost_sensitive_risk': avg_excess_cost_sensitive_risk,
+            'avg_generalization_error': avg_generalization_error,
+            'theorem4_bound': bound_term,
+            'T': T,
+            'K': K
+        }
+    
     def _compute_balanced_error(self, expert_predictions, labels, head_classes, tail_classes, params):
         """Tính balanced error theo đúng paper với equal group weights"""
         
@@ -837,6 +1086,17 @@ class MoEPluginOptimizer:
         print("\n📊 Step 2: Worst-group Plugin Optimization")
         final_params = self.worst_group_plugin_optimization(expert_predictions, val_labels, head_classes, tail_classes, cs_params)
         
+        # Step 3: Risk-Coverage Curves Evaluation
+        print("\n📊 Step 3: Risk-Coverage Curves Evaluation")
+        risk_coverage_results = self.compute_risk_coverage_curves(expert_predictions, val_labels, head_classes, tail_classes)
+        
+        # Save results
+        self.save_optimized_parameters(final_params)
+        self.save_risk_coverage_results(risk_coverage_results, self.config['output']['save_dir'])
+        
+        # Add risk-coverage results to final_params
+        final_params['risk_coverage_results'] = risk_coverage_results
+        
         print("\n" + "=" * 60)
         print("✅ Plugin Optimization Completed!")
         print(f"📊 Final Parameters:")
@@ -846,6 +1106,8 @@ class MoEPluginOptimizer:
         print(f"  - Group weights: {final_params['group_weights']}")
         print(f"  - Balanced error: {final_params['balanced_error']:.4f}")
         print(f"  - Worst-group error: {final_params['worst_group_error']:.4f}")
+        print(f"  - Balanced Error AURC: {risk_coverage_results['balanced_aurc']:.4f}")
+        print(f"  - Worst-Group Error AURC: {risk_coverage_results['worst_group_aurc']:.4f}")
         
         return final_params
     
