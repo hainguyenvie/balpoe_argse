@@ -31,7 +31,7 @@ class ImprovedMoEPluginOptimizer:
         with open(config_path, 'r') as f:
             self.config = json.load(f)
         
-        self.experts_dir = Path(self.config['experts']['checkpoint_dir'])
+        self.experts_dir = Path(self.config['experts']['experts_dir'])
         self.device = 'cpu'  # Use CPU for stability
         
     def setup_data_loaders(self):

@@ -32,7 +32,7 @@
     },
     
     "experts": {
-        "checkpoint_dir": "checkpoints/balpoe_experts/cifar100_ir100/models/Imbalance_CIFAR100LT_IR100_BalPoE_Experts/1022_153647",
+        "checkpoint_dir": "checkpoints/balpoe_experts/cifar100_ir100",
         "tau_values": [0, 1.0, 2.0],
         "expert_names": ["head_expert", "balanced_expert", "tail_expert"]
     },

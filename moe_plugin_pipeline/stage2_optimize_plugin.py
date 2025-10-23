@@ -275,7 +275,11 @@ class MoEPluginOptimizer:
         best_balanced_error = float('inf')
         current_combination = 0
         
-        # Vòng lặp ngoài: Grid search cho expert weights
+        # Add constraints for better optimization
+        min_tail_expert_weight = 0.1  # Minimum 10% weight for tail expert
+        min_balanced_expert_weight = 0.2  # Minimum 20% weight for balanced expert
+        
+        # Vòng lặp ngoài: Grid search cho expert weights với constraints
         for w_head in weight_search_space['w_head']:
             for w_balanced in weight_search_space['w_balanced']:
                 for w_tail in weight_search_space['w_tail']:
@@ -286,6 +290,12 @@ class MoEPluginOptimizer:
                         continue
                     
                     expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
+                    
+                    # Apply constraints - skip if tail expert gets too little weight
+                    if expert_weights[2] < min_tail_expert_weight:
+                        continue
+                    if expert_weights[1] < min_balanced_expert_weight:
+                        continue
                     
                     # Vòng lặp trong: Grid search cho lambda_0
                     for lambda_0 in lambda_0_candidates:
@@ -302,6 +312,10 @@ class MoEPluginOptimizer:
                             expert_predictions, labels,
                             expert_weights, lambda_0, alpha, head_classes, tail_classes
                         )
+                        
+                        # Add weight regularization penalty
+                        weight_penalty = self._compute_weight_penalty(expert_weights)
+                        balanced_error += weight_penalty
                         
                         # Debug: Print progress every 10 combinations or when finding new best
                         if current_combination % 10 == 0 or balanced_error < best_balanced_error:
@@ -325,10 +339,15 @@ class MoEPluginOptimizer:
         return best_params
     
     def _find_optimal_alpha(self, expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes):
-        """Tìm alpha tối ưu bằng power iteration (M=10 iterations)"""
+        """Tìm alpha tối ưu bằng improved power iteration"""
         
-        # Simplified power iteration (cần implement đầy đủ theo paper)
-        alpha = 0.5  # Initial guess
+        # Better initialization based on expert weights
+        # If tail expert has high weight, start with lower threshold
+        if expert_weights[2] > 0.3:  # Tail expert has significant weight
+            alpha = 0.3  # Lower threshold for tail-focused ensemble
+        else:
+            alpha = 0.5  # Standard threshold
+        
         M = self.config['cs_plugin']['alpha_search_iterations']
         
         for iteration in range(M):
@@ -337,8 +356,12 @@ class MoEPluginOptimizer:
                 expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
             )
             
-            # Update alpha (simplified update rule)
-            alpha = alpha * 0.9 + 0.1 * (1 - error)
+            # Improved update rule
+            if error > 0.5:  # High error, increase threshold
+                alpha = min(0.9, alpha + 0.1)
+            else:  # Low error, decrease threshold
+                alpha = max(0.1, alpha - 0.05)
+            
             alpha = max(0.0, min(1.0, alpha))  # Clamp to [0, 1]
         
         return alpha
@@ -367,6 +390,19 @@ class MoEPluginOptimizer:
             expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
         )
     
+    def _compute_weight_penalty(self, weights):
+        """Compute penalty for extreme weight distributions"""
+        # Penalize if any expert gets too much weight (>80%)
+        max_weight = max(weights)
+        if max_weight > 0.8:
+            return (max_weight - 0.8) * 0.1  # Penalty for extreme weights
+        
+        # Penalize if tail expert gets too little weight (<5%)
+        if weights[2] < 0.05:
+            return (0.05 - weights[2]) * 0.2  # Penalty for ignoring tail expert
+        
+        return 0.0
+    
     def worst_group_plugin_optimization(self, expert_predictions, labels, head_classes, tail_classes, cs_params):
         """
         Thuật toán 2: Worst-group Plugin để tối ưu Worst-Group Error
@@ -383,6 +419,10 @@ class MoEPluginOptimizer:
         
         best_params = cs_params
         best_worst_group_error = float('inf')
+        
+        # Early stopping parameters
+        patience = 5
+        no_improvement_count = 0
         
         for iteration in range(T):
             print(f"  🔄 Iteration {iteration+1}/{T}")
@@ -406,6 +446,11 @@ class MoEPluginOptimizer:
             weight_change = torch.abs(group_weights - old_group_weights).sum().item()
             print(f"    📊 Weight change: {weight_change:.6f}")
             
+            # Check for convergence
+            if weight_change < 1e-6:
+                print(f"    ✅ Converged at iteration {iteration+1}")
+                break
+            
             # Evaluate worst-group error
             worst_group_error = max(head_error, tail_error)
             
@@ -416,10 +461,16 @@ class MoEPluginOptimizer:
                     'group_weights': group_weights.tolist(),
                     'worst_group_error': worst_group_error
                 }
+                no_improvement_count = 0
                 
                 print(f"    ✅ New best: worst_group_error = {worst_group_error:.4f}")
                 print(f"        📊 Best group weights: {group_weights.tolist()}")
                 print(f"        📊 Head error: {head_error:.4f}, Tail error: {tail_error:.4f}")
+            else:
+                no_improvement_count += 1
+                if no_improvement_count >= patience:
+                    print(f"    ⏹️  Early stopping at iteration {iteration+1}")
+                    break
         
         print(f"✅ Worst-group plugin optimization completed!")
         print(f"📊 Best worst-group error: {best_worst_group_error:.4f}")
@@ -534,7 +585,15 @@ class MoEPluginOptimizer:
             'rejection_threshold': params['alpha'],  # Use alpha as rejection threshold
             'balanced_error': params['balanced_error'],
             'worst_group_error': params['worst_group_error'],
-            'config': self.config
+            'config': self.config,
+            'improvements': {
+                'constrained_optimization': True,
+                'weight_regularization': True,
+                'early_stopping': True,
+                'improved_alpha_finding': True,
+                'min_tail_expert_weight': 0.1,
+                'min_balanced_expert_weight': 0.2
+            }
         }
         
         # Save parameters
