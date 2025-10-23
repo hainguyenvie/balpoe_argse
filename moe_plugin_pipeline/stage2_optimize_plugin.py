@@ -402,21 +402,24 @@ class MoEPluginOptimizer:
         
         # Map classes to groups (0=head, 1=tail)
         for class_idx in range(num_classes):
-            if head_classes[class_idx]:
+            if class_idx < len(head_classes) and head_classes[class_idx]:
                 group_indices[class_idx] = 0  # head group
             else:
                 group_indices[class_idx] = 1  # tail group
         
         # Compute optimal classifier: h*(x) = arg max_{y∈[L]} (1/α*[y]) * ηy(x)
-        weighted_probs = class_probs / alpha_star[group_indices]  # (1/α*[y]) * ηy(x)
+        # alpha_star has shape [2] (head, tail), group_indices has shape [num_classes]
+        alpha_per_class = alpha_star[group_indices]  # [num_classes]
+        weighted_probs = class_probs / alpha_per_class  # (1/α*[y]) * ηy(x)
         predictions = torch.argmax(weighted_probs, dim=1)
         
         # Compute optimal rejector: r*(x) = 1 ⟺ max_{y∈[L]} (1/α*[y]) * ηy(x) < threshold
         max_weighted_probs = torch.max(weighted_probs, dim=1)[0]
         
         # Compute sample-dependent threshold: Σ_{y'∈[L]} ((1/α*[y']) - μ*[y']) * ηy'(x) - c
+        mu_per_class = mu_star[group_indices]  # [num_classes]
         threshold = torch.sum(
-            ((1.0 / alpha_star[group_indices]) - mu_star[group_indices]) * class_probs, 
+            ((1.0 / alpha_per_class) - mu_per_class) * class_probs, 
             dim=1
         ) - c
         
@@ -511,21 +514,24 @@ class MoEPluginOptimizer:
         
         # Map classes to groups (0=head, 1=tail)
         for class_idx in range(num_classes):
-            if head_classes[class_idx]:
+            if class_idx < len(head_classes) and head_classes[class_idx]:
                 group_indices[class_idx] = 0  # head group
             else:
                 group_indices[class_idx] = 1  # tail group
         
         # Compute optimal classifier: h*(x) = arg max_{y∈[L]} (1/α̂[y]) * ηy(x)
-        weighted_probs = class_probs / alpha_hat[group_indices]  # (1/α̂[y]) * ηy(x)
+        # alpha_hat has shape [2] (head, tail), group_indices has shape [num_classes]
+        alpha_per_class = alpha_hat[group_indices]  # [num_classes]
+        weighted_probs = class_probs / alpha_per_class  # (1/α̂[y]) * ηy(x)
         predictions = torch.argmax(weighted_probs, dim=1)
         
         # Compute optimal rejector: r*(x) = 1 ⟺ max_{y∈[L]} (1/α̂[y]) * ηy(x) < threshold
         max_weighted_probs = torch.max(weighted_probs, dim=1)[0]
         
         # Compute sample-dependent threshold: Σ_{y'∈[L]} ((1/α̂[y']) - μ̂[y']) * ηy'(x) - c
+        mu_per_class = mu_hat[group_indices]  # [num_classes]
         threshold = torch.sum(
-            ((1.0 / alpha_hat[group_indices]) - mu_hat[group_indices]) * class_probs, 
+            ((1.0 / alpha_per_class) - mu_per_class) * class_probs, 
             dim=1
         ) - c
         
