@@ -336,8 +336,8 @@ class MoEPluginOptimizer:
         reject_mask = max_probs < alpha
         
         # Get group masks
-        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
-        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
+        head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
+        tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
         
         # Compute group-wise errors
         head_correct = (predictions == labels) & (~reject_mask) & head_mask
@@ -402,10 +402,17 @@ class MoEPluginOptimizer:
             
             if worst_group_error < best_worst_group_error:
                 best_worst_group_error = worst_group_error
+                
+                # Tính balanced error cho parameters này
+                balanced_error = self._compute_balanced_error(
+                    expert_predictions, labels, head_classes, tail_classes, current_params
+                )
+                
                 best_params = {
                     **current_params,
                     'group_weights': group_weights.tolist(),
-                    'worst_group_error': worst_group_error
+                    'worst_group_error': worst_group_error,
+                    'balanced_error': balanced_error
                 }
                 
                 print(f"    ✅ New best: worst_group_error = {worst_group_error:.4f}")
@@ -458,8 +465,8 @@ class MoEPluginOptimizer:
         """Tính group-wise errors với parameters cụ thể"""
         
         # Get group masks
-        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
-        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
+        head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
+        tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
         
         # Compute errors for each group
         head_error = self._compute_group_error_with_params(expert_predictions, labels, head_mask, params)
@@ -492,12 +499,28 @@ class MoEPluginOptimizer:
         
         return error.item()
     
+    def _compute_balanced_error(self, expert_predictions, labels, head_classes, tail_classes, params):
+        """Tính balanced error với equal group weights"""
+        
+        # Get group masks
+        head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
+        tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
+        
+        # Compute errors for each group
+        head_error = self._compute_group_error_with_params(expert_predictions, labels, head_mask, params)
+        tail_error = self._compute_group_error_with_params(expert_predictions, labels, tail_mask, params)
+        
+        # Balanced error = (head_error + tail_error) / 2
+        balanced_error = (head_error + tail_error) / 2
+        
+        return balanced_error
+    
     def _compute_group_errors(self, expert_predictions, labels, head_classes, tail_classes, params):
         """Tính group-wise errors"""
         
         # Get group masks
-        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
-        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
+        head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
+        tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
         
         # Compute errors for each group
         head_error = self._compute_group_error(expert_predictions, labels, head_mask, params)
