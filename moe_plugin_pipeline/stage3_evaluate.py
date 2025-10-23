@@ -91,16 +91,21 @@ class MoEPluginEvaluator:
         expert_names = ['head_expert', 'balanced_expert', 'tail_expert']
         
         for tau, name in zip(tau_values, expert_names):
-            # Find checkpoint file
-            checkpoint_files = list(self.experts_dir.glob(f"*epoch*.pth"))
-            if not checkpoint_files:
-                raise FileNotFoundError(f"No checkpoint files found in {self.experts_dir}")
-            
-            # Use the latest checkpoint
-            latest_checkpoint = max(checkpoint_files, key=lambda x: x.stat().st_mtime)
+            # Find checkpoint file - prioritize best model
+            best_checkpoint = self.experts_dir / "model_best.pth"
+            if best_checkpoint.exists():
+                checkpoint_path = best_checkpoint
+                print(f"  🏆 Using best model: {best_checkpoint.name}")
+            else:
+                # Fallback to latest epoch checkpoint
+                checkpoint_files = list(self.experts_dir.glob(f"*epoch*.pth"))
+                if not checkpoint_files:
+                    raise FileNotFoundError(f"No checkpoint files found in {self.experts_dir}")
+                checkpoint_path = max(checkpoint_files, key=lambda x: x.stat().st_mtime)
+                print(f"  ⚠️  Best model not found, using latest: {checkpoint_path.name}")
             
             # Load checkpoint
-            checkpoint = torch.load(latest_checkpoint, map_location='cpu')
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
             
             # Create model architecture
             model_config = {
@@ -123,7 +128,7 @@ class MoEPluginEvaluator:
             
             self.expert_models[name] = model
             
-            print(f"  ✅ {name} (τ={tau}): {latest_checkpoint.name}")
+            print(f"  ✅ {name} (τ={tau}): {checkpoint_path.name}")
         
         return self.expert_models
     
