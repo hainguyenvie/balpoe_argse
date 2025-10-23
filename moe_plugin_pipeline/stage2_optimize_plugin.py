@@ -42,15 +42,15 @@ class MoEPluginOptimizer:
         
         seed_everything(seed)
         
-        print(f"🚀 Khởi tạo MoE-Plugin Optimizer")
-        print(f"📂 Experts directory: {self.experts_dir}")
-        print(f"📊 Dataset: {self.config['dataset']['name']}")
-        print(f"🎯 CS-plugin candidates: {self.config['cs_plugin']['lambda_0_candidates']}")
-        print(f"🔄 Worst-group iterations: {self.config['worst_group_plugin']['max_iterations']}")
+        print(f"[INIT] Initialize MoE-Plugin Optimizer")
+        print(f"[INFO] Experts directory: {self.experts_dir}")
+        print(f"[INFO] Dataset: {self.config['dataset']['name']}")
+        print(f"[INFO] CS-plugin candidates: {self.config['cs_plugin']['lambda_0_candidates']}")
+        print(f"[INFO] Worst-group iterations: {self.config['worst_group_plugin']['max_iterations']}")
         
     def setup_data_loaders(self):
         """Thiết lập data loaders cho validation (20%) và test (80%)"""
-        print("📂 Thiết lập data loaders...")
+        print("[DATA] Setup data loaders...")
         
         # Create data loader config
         data_loader_config = {
@@ -582,7 +582,7 @@ class MoEPluginOptimizer:
         Thuật toán 2: Worst-group Plugin để tối ưu Worst-Group Error
         Theo đúng paper "Learning to Reject Meets Long-tail Learning"
         """
-        print("🔍 Worst-group Plugin Optimization...")
+        print("[DEBUG] Worst-group Plugin Optimization...")
         
         # Initialize group weights β⁽⁰⁾ = [0.5, 0.5]
         group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)  # [head, tail]
@@ -604,8 +604,8 @@ class MoEPluginOptimizer:
         }
         
         for iteration in range(T):
-            print(f"  🔄 Iteration {iteration+1}/{T}")
-            print(f"    📊 Current group weights β⁽ᵗ⁾: {group_weights.tolist()}")
+            print(f"  [ITER] Iteration {iteration+1}/{T}")
+            print(f"    [STATS] Current group weights β⁽ᵗ⁾: {group_weights.tolist()}")
             
             # BƯỚC QUAN TRỌNG: Gọi CS-plugin với group weights β⁽ᵗ⁾ hiện tại
             # Tìm (h⁽ᵗ⁾, r⁽ᵗ⁾) tối ưu cho cost-sensitive error với β⁽ᵗ⁾
@@ -615,10 +615,13 @@ class MoEPluginOptimizer:
             
             # Compute group-wise errors với classifier (h⁽ᵗ⁾, r⁽ᵗ⁾)
             head_error, tail_error = self._compute_group_errors_with_params(
-                expert_predictions, labels, head_classes, tail_classes, current_params
+                expert_predictions, labels, head_classes, tail_classes, current_params, group_weights
             )
             
-            print(f"    📊 Group errors: Head={head_error:.4f}, Tail={tail_error:.4f}")
+            print(f"    [STATS] Group errors: Head={head_error:.4f}, Tail={tail_error:.4f}")
+            print(f"    [DEBUG] Head classes count: {head_classes.sum()}, Tail classes count: {tail_classes.sum()}")
+            print(f"    [DEBUG] Total samples: {len(labels)}")
+            print(f"    [DEBUG] Current params keys: {list(current_params.keys())}")
             
             # Track Theorem 4 metrics
             theorem4_metrics['head_errors'].append(head_error)
@@ -644,9 +647,15 @@ class MoEPluginOptimizer:
             
             # Update group weights using exponentiated gradient
             # βₖ⁽ᵗ⁺¹⁾ ∝ βₖ⁽ᵗ⁾ · exp(ξ · êₖ(h⁽ᵗ⁾, r⁽ᵗ⁾))
+            old_group_weights = group_weights.clone()
             group_weights = self._update_group_weights(
                 group_weights, head_error, tail_error, step_size
             )
+            
+            print(f"    📊 Group weights update:")
+            print(f"        Old: {old_group_weights.tolist()}")
+            print(f"        New: {group_weights.tolist()}")
+            print(f"        Change: {(group_weights - old_group_weights).tolist()}")
             
             # Evaluate worst-group error: R_worst^rej = max(e_k) + c*P(r(x)=1)
             worst_group_error = max(head_error, tail_error) + current_params.get('rejection_rate', 0.0) * self.config['cs_plugin']['rejection_penalty']
@@ -874,23 +883,29 @@ class MoEPluginOptimizer:
         
         return best_params
     
-    def _compute_group_errors_with_params(self, expert_predictions, labels, head_classes, tail_classes, params):
+    def _compute_group_errors_with_params(self, expert_predictions, labels, head_classes, tail_classes, params, group_weights=None):
         """Tính group-wise errors với parameters cụ thể"""
+        
+        if group_weights is None:
+            group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)
         
         # Get group masks
         head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
         tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
         
         # Compute errors for each group
-        head_error = self._compute_group_error_with_params(expert_predictions, labels, head_mask, params)
-        tail_error = self._compute_group_error_with_params(expert_predictions, labels, tail_mask, params)
+        head_error = self._compute_group_error_with_params(expert_predictions, labels, head_mask, params, group_weights)
+        tail_error = self._compute_group_error_with_params(expert_predictions, labels, tail_mask, params, group_weights)
         
         return head_error, tail_error
     
-    def _compute_group_error_with_params(self, expert_predictions, labels, group_mask, params):
+    def _compute_group_error_with_params(self, expert_predictions, labels, group_mask, params, group_weights):
         """Tính error cho một group với parameters cụ thể sử dụng Bayes-optimal rejector"""
         
+        print(f"    🔍 Debug - Group mask sum: {group_mask.sum()}, Total samples: {len(group_mask)}")
+        
         if group_mask.sum() == 0:
+            print(f"    ⚠️ Warning - No samples in this group!")
             return 0.0
         
         # Get group predictions and labels
@@ -900,8 +915,8 @@ class MoEPluginOptimizer:
         # Get full expert predictions for this group
         full_expert_predictions = {name: pred[group_mask] for name, pred in expert_predictions.items()}
         
-        # Get group weights (assume equal for balanced error)
-        group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)
+        # Use passed group weights
+        print(f"    [DEBUG] Using group weights: {group_weights.tolist()}")
         
         # α̂k = αk^(m) / βk
         alpha_hat = torch.tensor(params['alpha_opt']) / group_weights
@@ -910,16 +925,22 @@ class MoEPluginOptimizer:
         mu_hat = torch.tensor([params['lambda_0'], 0.0], dtype=torch.float)
         
         # Apply Bayes-optimal rejector với optimized parameters
+        # Note: We need to pass the actual head_classes and tail_classes, not simplified ones
         predictions, reject_mask = self._apply_bayes_optimal_rejector_with_params(
             full_expert_predictions, group_labels, 
-            torch.tensor([True, False]), torch.tensor([False, True]),  # Simplified head/tail classes
+            head_classes, tail_classes,  # Use actual head/tail classes
             params['expert_weights'], alpha_hat, mu_hat, 
             self.config['cs_plugin']['rejection_penalty']
         )
         
         # Compute error: P(y ≠ h(x), r(x) = 0, y ∈ Gk)
         errors = (predictions != group_labels) & (~reject_mask)
-        error_rate = errors.float().sum() / max((~reject_mask).sum().item(), 1)
+        non_rejected = (~reject_mask).sum().item()
+        error_rate = errors.float().sum() / max(non_rejected, 1)
+        
+        print(f"    🔍 Debug - Predictions shape: {predictions.shape}, Labels shape: {group_labels.shape}")
+        print(f"    🔍 Debug - Reject mask sum: {reject_mask.sum()}, Non-rejected: {non_rejected}")
+        print(f"    🔍 Debug - Errors sum: {errors.sum()}, Error rate: {error_rate:.4f}")
         
         return error_rate.item()
     
@@ -1069,7 +1090,7 @@ class MoEPluginOptimizer:
     
     def optimize(self):
         """Chạy toàn bộ optimization pipeline"""
-        print("🚀 Bắt đầu Plugin Optimization Pipeline")
+        print("[RUN] Start Plugin Optimization Pipeline")
         print("=" * 60)
         
         # Setup data loaders
@@ -1085,15 +1106,15 @@ class MoEPluginOptimizer:
         head_classes, tail_classes = self.define_groups(val_labels)
         
         # Step 1: CS-plugin optimization
-        print("\n📊 Step 1: CS-plugin Optimization")
+        print("\n[STATS] Step 1: CS-plugin Optimization")
         cs_params = self.cs_plugin_optimization(expert_predictions, val_labels, head_classes, tail_classes)
         
         # Step 2: Worst-group plugin optimization
-        print("\n📊 Step 2: Worst-group Plugin Optimization")
+        print("\n[STATS] Step 2: Worst-group Plugin Optimization")
         final_params = self.worst_group_plugin_optimization(expert_predictions, val_labels, head_classes, tail_classes, cs_params)
         
         # Step 3: Risk-Coverage Curves Evaluation
-        print("\n📊 Step 3: Risk-Coverage Curves Evaluation")
+        print("\n[STATS] Step 3: Risk-Coverage Curves Evaluation")
         risk_coverage_results = self.compute_risk_coverage_curves(expert_predictions, val_labels, head_classes, tail_classes)
         
         # Save results
