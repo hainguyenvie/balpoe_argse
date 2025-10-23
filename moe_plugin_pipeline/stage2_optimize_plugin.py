@@ -244,12 +244,36 @@ class MoEPluginOptimizer:
         """
         print("🔍 CS-plugin Optimization...")
         
+        # Debug: Print expert prediction statistics
+        print(f"📊 Expert prediction statistics:")
+        for name, preds in expert_predictions.items():
+            print(f"  - {name}: mean={preds.mean():.4f}, std={preds.std():.4f}, min={preds.min():.4f}, max={preds.max():.4f}")
+        
+        # Debug: Print label distribution
+        unique_labels, counts = torch.unique(labels, return_counts=True)
+        print(f"📊 Label distribution (first 10 classes):")
+        for i in range(min(10, len(unique_labels))):
+            label = unique_labels[i].item()
+            count = counts[i].item()
+            group = "Head" if head_classes[label] else "Tail"
+            print(f"  - Class {label}: {count} samples ({group})")
+        
         # Grid search parameters
         lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
         weight_search_space = self.config['cs_plugin']['weight_search_space']
         
+        # Debug: Print search space
+        total_combinations = (len(weight_search_space['w_head']) * 
+                           len(weight_search_space['w_balanced']) * 
+                           len(weight_search_space['w_tail']) * 
+                           len(lambda_0_candidates))
+        print(f"🔍 Grid search: {total_combinations} total combinations")
+        print(f"  - Weight space: {len(weight_search_space['w_head'])}×{len(weight_search_space['w_balanced'])}×{len(weight_search_space['w_tail'])} = {len(weight_search_space['w_head']) * len(weight_search_space['w_balanced']) * len(weight_search_space['w_tail'])}")
+        print(f"  - Lambda candidates: {lambda_0_candidates}")
+        
         best_params = None
         best_balanced_error = float('inf')
+        current_combination = 0
         
         # Vòng lặp ngoài: Grid search cho expert weights
         for w_head in weight_search_space['w_head']:
@@ -265,6 +289,7 @@ class MoEPluginOptimizer:
                     
                     # Vòng lặp trong: Grid search cho lambda_0
                     for lambda_0 in lambda_0_candidates:
+                        current_combination += 1
                         
                         # Tìm alpha tối ưu bằng power iteration
                         alpha = self._find_optimal_alpha(
@@ -278,6 +303,10 @@ class MoEPluginOptimizer:
                             expert_weights, lambda_0, alpha, head_classes, tail_classes
                         )
                         
+                        # Debug: Print progress every 10 combinations or when finding new best
+                        if current_combination % 10 == 0 or balanced_error < best_balanced_error:
+                            print(f"    🔍 [{current_combination}/{total_combinations}] weights={[f'{w:.3f}' for w in expert_weights]}, λ₀={lambda_0}, α={alpha:.4f}, error={balanced_error:.4f}")
+                        
                         if balanced_error < best_balanced_error:
                             best_balanced_error = balanced_error
                             best_params = {
@@ -288,6 +317,7 @@ class MoEPluginOptimizer:
                             }
                             
                             print(f"    ✅ New best: balanced_error = {balanced_error:.4f}")
+                            print(f"        📊 Best params: weights={[f'{w:.3f}' for w in expert_weights]}, λ₀={lambda_0}, α={alpha:.4f}")
         
         print(f"✅ CS-plugin optimization completed!")
         print(f"📊 Best balanced error: {best_balanced_error:.4f}")
@@ -362,10 +392,19 @@ class MoEPluginOptimizer:
                 expert_predictions, labels, head_classes, tail_classes, cs_params
             )
             
+            # Debug: Print group errors and weights
+            print(f"    📊 Group errors: Head={head_error:.4f}, Tail={tail_error:.4f}")
+            print(f"    📊 Current group weights: {group_weights.tolist()}")
+            
             # Update group weights using exponentiated gradient
+            old_group_weights = group_weights.clone()
             group_weights = self._update_group_weights(
                 group_weights, head_error, tail_error, step_size
             )
+            
+            # Debug: Print weight updates
+            weight_change = torch.abs(group_weights - old_group_weights).sum().item()
+            print(f"    📊 Weight change: {weight_change:.6f}")
             
             # Evaluate worst-group error
             worst_group_error = max(head_error, tail_error)
@@ -379,6 +418,8 @@ class MoEPluginOptimizer:
                 }
                 
                 print(f"    ✅ New best: worst_group_error = {worst_group_error:.4f}")
+                print(f"        📊 Best group weights: {group_weights.tolist()}")
+                print(f"        📊 Head error: {head_error:.4f}, Tail error: {tail_error:.4f}")
         
         print(f"✅ Worst-group plugin optimization completed!")
         print(f"📊 Best worst-group error: {best_worst_group_error:.4f}")
@@ -388,9 +429,9 @@ class MoEPluginOptimizer:
     def _compute_group_errors(self, expert_predictions, labels, head_classes, tail_classes, params):
         """Tính group-wise errors"""
         
-        # Get group masks
-        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
-        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
+        # Get group masks - fix deprecation warning
+        head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
+        tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
         
         # Compute errors for each group
         head_error = self._compute_group_error(expert_predictions, labels, head_mask, params)
@@ -502,6 +543,29 @@ class MoEPluginOptimizer:
             json.dump(params_dict, f, indent=2)
         
         print(f"✅ Parameters saved to: {params_file}")
+        
+        # Debug: Print detailed final results
+        print(f"\n📊 Detailed Final Results:")
+        print(f"  - Lambda_0: {params['lambda_0']}")
+        print(f"  - Alpha (rejection threshold): {params['alpha']:.6f}")
+        print(f"  - Expert weights: {[f'{w:.6f}' for w in params['expert_weights']]}")
+        print(f"  - Group weights: {[f'{w:.6f}' for w in params['group_weights']]}")
+        print(f"  - Balanced error: {params['balanced_error']:.6f}")
+        print(f"  - Worst-group error: {params['worst_group_error']:.6f}")
+        
+        # Debug: Analyze expert weight distribution
+        expert_names = ['head_expert', 'balanced_expert', 'tail_expert']
+        print(f"\n🔍 Expert Weight Analysis:")
+        for name, weight in zip(expert_names, params['expert_weights']):
+            percentage = weight * 100
+            print(f"  - {name}: {weight:.6f} ({percentage:.2f}%)")
+        
+        # Debug: Analyze group weight distribution
+        group_names = ['head_group', 'tail_group']
+        print(f"\n🔍 Group Weight Analysis:")
+        for name, weight in zip(group_names, params['group_weights']):
+            percentage = weight * 100
+            print(f"  - {name}: {weight:.6f} ({percentage:.2f}%)")
         
         return save_dir
 
