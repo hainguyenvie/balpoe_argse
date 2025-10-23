@@ -244,44 +244,14 @@ class MoEPluginOptimizer:
         """
         print("🔍 CS-plugin Optimization...")
         
-        # Debug: Print expert prediction statistics
-        print(f"📊 Expert prediction statistics:")
-        for name, preds in expert_predictions.items():
-            print(f"  - {name}: mean={preds.mean():.4f}, std={preds.std():.4f}, min={preds.min():.4f}, max={preds.max():.4f}")
-        
-        # Debug: Print label distribution
-        unique_labels, counts = torch.unique(labels, return_counts=True)
-        print(f"📊 Label distribution (first 10 classes):")
-        for i in range(min(10, len(unique_labels))):
-            label = unique_labels[i].item()
-            count = counts[i].item()
-            group = "Head" if head_classes[label] else "Tail"
-            print(f"  - Class {label}: {count} samples ({group})")
-        
         # Grid search parameters
         lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
         weight_search_space = self.config['cs_plugin']['weight_search_space']
         
-        # Debug: Print search space
-        total_combinations = (len(weight_search_space['w_head']) * 
-                           len(weight_search_space['w_balanced']) * 
-                           len(weight_search_space['w_tail']) * 
-                           len(lambda_0_candidates))
-        print(f"🔍 Grid search: {total_combinations} total combinations")
-        print(f"  - Weight space: {len(weight_search_space['w_head'])}×{len(weight_search_space['w_balanced'])}×{len(weight_search_space['w_tail'])} = {len(weight_search_space['w_head']) * len(weight_search_space['w_balanced']) * len(weight_search_space['w_tail'])}")
-        print(f"  - Lambda candidates: {lambda_0_candidates}")
-        
         best_params = None
         best_balanced_error = float('inf')
-        current_combination = 0
-        constrained_combinations = 0
-        total_valid_combinations = 0
         
-        # Add constraints for better optimization (relaxed)
-        min_tail_expert_weight = 0.05  # Minimum 5% weight for tail expert (relaxed)
-        min_balanced_expert_weight = 0.1  # Minimum 10% weight for balanced expert (relaxed)
-        
-        # Vòng lặp ngoài: Grid search cho expert weights với constraints
+        # Vòng lặp ngoài: Grid search cho expert weights
         for w_head in weight_search_space['w_head']:
             for w_balanced in weight_search_space['w_balanced']:
                 for w_tail in weight_search_space['w_tail']:
@@ -293,19 +263,8 @@ class MoEPluginOptimizer:
                     
                     expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
                     
-                    # Apply constraints - skip if tail expert gets too little weight
-                    if expert_weights[2] < min_tail_expert_weight:
-                        constrained_combinations += 1
-                        continue
-                    if expert_weights[1] < min_balanced_expert_weight:
-                        constrained_combinations += 1
-                        continue
-                    
-                    total_valid_combinations += 1
-                    
                     # Vòng lặp trong: Grid search cho lambda_0
                     for lambda_0 in lambda_0_candidates:
-                        current_combination += 1
                         
                         # Tìm alpha tối ưu bằng power iteration
                         alpha = self._find_optimal_alpha(
@@ -319,14 +278,6 @@ class MoEPluginOptimizer:
                             expert_weights, lambda_0, alpha, head_classes, tail_classes
                         )
                         
-                        # Add weight regularization penalty
-                        weight_penalty = self._compute_weight_penalty(expert_weights)
-                        balanced_error += weight_penalty
-                        
-                        # Debug: Print progress every 10 combinations or when finding new best
-                        if current_combination % 10 == 0 or balanced_error < best_balanced_error:
-                            print(f"    🔍 [{current_combination}/{total_combinations}] weights={[f'{w:.3f}' for w in expert_weights]}, λ₀={lambda_0}, α={alpha:.4f}, error={balanced_error:.4f}")
-                        
                         if balanced_error < best_balanced_error:
                             best_balanced_error = balanced_error
                             best_params = {
@@ -337,26 +288,17 @@ class MoEPluginOptimizer:
                             }
                             
                             print(f"    ✅ New best: balanced_error = {balanced_error:.4f}")
-                            print(f"        📊 Best params: weights={[f'{w:.3f}' for w in expert_weights]}, λ₀={lambda_0}, α={alpha:.4f}")
         
         print(f"✅ CS-plugin optimization completed!")
         print(f"📊 Best balanced error: {best_balanced_error:.4f}")
-        print(f"📊 Constrained combinations: {constrained_combinations}")
-        print(f"📊 Valid combinations: {total_valid_combinations}")
-        
-        # Fallback: If no good solution found with constraints, try without constraints
-        if best_balanced_error > 0.8:  # If error is too high
-            print("⚠️  High error detected, trying fallback without constraints...")
-            return self._fallback_optimization(expert_predictions, labels, head_classes, tail_classes)
         
         return best_params
     
     def _find_optimal_alpha(self, expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes):
-        """Tìm alpha tối ưu bằng improved power iteration với bounds"""
+        """Tìm alpha tối ưu bằng power iteration (M=10 iterations)"""
         
-        # Better initialization - always start with reasonable alpha
-        alpha = 0.4  # Start with moderate threshold
-        
+        # Simplified power iteration (cần implement đầy đủ theo paper)
+        alpha = 0.5  # Initial guess
         M = self.config['cs_plugin']['alpha_search_iterations']
         
         for iteration in range(M):
@@ -365,15 +307,9 @@ class MoEPluginOptimizer:
                 expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
             )
             
-            # Improved update rule with bounds
-            if error > 0.6:  # High error, increase threshold
-                alpha = min(0.7, alpha + 0.05)  # Cap at 0.7
-            elif error < 0.3:  # Low error, decrease threshold
-                alpha = max(0.2, alpha - 0.05)  # Floor at 0.2
-            else:  # Moderate error, fine-tune
-                alpha = alpha + 0.01 * (0.5 - error)  # Small adjustments
-            
-            alpha = max(0.2, min(0.7, alpha))  # Clamp to [0.2, 0.7] - reasonable range
+            # Update alpha (simplified update rule)
+            alpha = alpha * 0.9 + 0.1 * (1 - error)
+            alpha = max(0.0, min(1.0, alpha))  # Clamp to [0, 1]
         
         return alpha
     
@@ -401,61 +337,6 @@ class MoEPluginOptimizer:
             expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
         )
     
-    def _compute_weight_penalty(self, weights):
-        """Compute penalty for extreme weight distributions (relaxed)"""
-        # Penalize if any expert gets too much weight (>90%) - relaxed from 80%
-        max_weight = max(weights)
-        if max_weight > 0.9:
-            return (max_weight - 0.9) * 0.05  # Reduced penalty
-        
-        # Penalize if tail expert gets too little weight (<2%) - relaxed from 5%
-        if weights[2] < 0.02:
-            return (0.02 - weights[2]) * 0.1  # Reduced penalty
-        
-        return 0.0
-    
-    def _fallback_optimization(self, expert_predictions, labels, head_classes, tail_classes):
-        """Fallback optimization without constraints if main optimization fails"""
-        print("🔄 Running fallback optimization without constraints...")
-        
-        lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
-        weight_search_space = self.config['cs_plugin']['weight_search_space']
-        
-        best_params = None
-        best_balanced_error = float('inf')
-        
-        # Try all combinations without constraints
-        for w_head in weight_search_space['w_head']:
-            for w_balanced in weight_search_space['w_balanced']:
-                for w_tail in weight_search_space['w_tail']:
-                    total_weight = w_head + w_balanced + w_tail
-                    if total_weight == 0:
-                        continue
-                    
-                    expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
-                    
-                    for lambda_0 in lambda_0_candidates:
-                        alpha = self._find_optimal_alpha(
-                            expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes
-                        )
-                        
-                        balanced_error = self._evaluate_balanced_error(
-                            expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
-                        )
-                        
-                        # No weight penalty in fallback
-                        if balanced_error < best_balanced_error:
-                            best_balanced_error = balanced_error
-                            best_params = {
-                                'lambda_0': lambda_0,
-                                'alpha': alpha,
-                                'expert_weights': expert_weights,
-                                'balanced_error': balanced_error
-                            }
-        
-        print(f"📊 Fallback best balanced error: {best_balanced_error:.4f}")
-        return best_params
-    
     def worst_group_plugin_optimization(self, expert_predictions, labels, head_classes, tail_classes, cs_params):
         """
         Thuật toán 2: Worst-group Plugin để tối ưu Worst-Group Error
@@ -473,10 +354,6 @@ class MoEPluginOptimizer:
         best_params = cs_params
         best_worst_group_error = float('inf')
         
-        # Early stopping parameters
-        patience = 5
-        no_improvement_count = 0
-        
         for iteration in range(T):
             print(f"  🔄 Iteration {iteration+1}/{T}")
             
@@ -485,24 +362,10 @@ class MoEPluginOptimizer:
                 expert_predictions, labels, head_classes, tail_classes, cs_params
             )
             
-            # Debug: Print group errors and weights
-            print(f"    📊 Group errors: Head={head_error:.4f}, Tail={tail_error:.4f}")
-            print(f"    📊 Current group weights: {group_weights.tolist()}")
-            
             # Update group weights using exponentiated gradient
-            old_group_weights = group_weights.clone()
             group_weights = self._update_group_weights(
                 group_weights, head_error, tail_error, step_size
             )
-            
-            # Debug: Print weight updates
-            weight_change = torch.abs(group_weights - old_group_weights).sum().item()
-            print(f"    📊 Weight change: {weight_change:.6f}")
-            
-            # Check for convergence
-            if weight_change < 1e-6:
-                print(f"    ✅ Converged at iteration {iteration+1}")
-                break
             
             # Evaluate worst-group error
             worst_group_error = max(head_error, tail_error)
@@ -514,16 +377,8 @@ class MoEPluginOptimizer:
                     'group_weights': group_weights.tolist(),
                     'worst_group_error': worst_group_error
                 }
-                no_improvement_count = 0
                 
                 print(f"    ✅ New best: worst_group_error = {worst_group_error:.4f}")
-                print(f"        📊 Best group weights: {group_weights.tolist()}")
-                print(f"        📊 Head error: {head_error:.4f}, Tail error: {tail_error:.4f}")
-            else:
-                no_improvement_count += 1
-                if no_improvement_count >= patience:
-                    print(f"    ⏹️  Early stopping at iteration {iteration+1}")
-                    break
         
         print(f"✅ Worst-group plugin optimization completed!")
         print(f"📊 Best worst-group error: {best_worst_group_error:.4f}")
@@ -533,9 +388,9 @@ class MoEPluginOptimizer:
     def _compute_group_errors(self, expert_predictions, labels, head_classes, tail_classes, params):
         """Tính group-wise errors"""
         
-        # Get group masks - fix deprecation warning
-        head_mask = torch.tensor([bool(head_classes[label.item()]) for label in labels])
-        tail_mask = torch.tensor([bool(tail_classes[label.item()]) for label in labels])
+        # Get group masks
+        head_mask = torch.tensor([head_classes[label.item()] for label in labels])
+        tail_mask = torch.tensor([tail_classes[label.item()] for label in labels])
         
         # Compute errors for each group
         head_error = self._compute_group_error(expert_predictions, labels, head_mask, params)
@@ -638,17 +493,7 @@ class MoEPluginOptimizer:
             'rejection_threshold': params['alpha'],  # Use alpha as rejection threshold
             'balanced_error': params['balanced_error'],
             'worst_group_error': params['worst_group_error'],
-            'config': self.config,
-            'improvements': {
-                'constrained_optimization': True,
-                'weight_regularization': True,
-                'early_stopping': True,
-                'improved_alpha_finding': True,
-                'fallback_optimization': True,
-                'min_tail_expert_weight': 0.05,
-                'min_balanced_expert_weight': 0.1,
-                'alpha_bounds': [0.2, 0.7]
-            }
+            'config': self.config
         }
         
         # Save parameters
@@ -657,29 +502,6 @@ class MoEPluginOptimizer:
             json.dump(params_dict, f, indent=2)
         
         print(f"✅ Parameters saved to: {params_file}")
-        
-        # Debug: Print detailed final results
-        print(f"\n📊 Detailed Final Results:")
-        print(f"  - Lambda_0: {params['lambda_0']}")
-        print(f"  - Alpha (rejection threshold): {params['alpha']:.6f}")
-        print(f"  - Expert weights: {[f'{w:.6f}' for w in params['expert_weights']]}")
-        print(f"  - Group weights: {[f'{w:.6f}' for w in params['group_weights']]}")
-        print(f"  - Balanced error: {params['balanced_error']:.6f}")
-        print(f"  - Worst-group error: {params['worst_group_error']:.6f}")
-        
-        # Debug: Analyze expert weight distribution
-        expert_names = ['head_expert', 'balanced_expert', 'tail_expert']
-        print(f"\n🔍 Expert Weight Analysis:")
-        for name, weight in zip(expert_names, params['expert_weights']):
-            percentage = weight * 100
-            print(f"  - {name}: {weight:.6f} ({percentage:.2f}%)")
-        
-        # Debug: Analyze group weight distribution
-        group_names = ['head_group', 'tail_group']
-        print(f"\n🔍 Group Weight Analysis:")
-        for name, weight in zip(group_names, params['group_weights']):
-            percentage = weight * 100
-            print(f"  - {name}: {weight:.6f} ({percentage:.2f}%)")
         
         return save_dir
 
