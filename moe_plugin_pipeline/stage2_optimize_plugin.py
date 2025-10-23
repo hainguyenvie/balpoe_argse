@@ -664,16 +664,16 @@ class MoEPluginOptimizer:
         # Grid search cho lambda_0
         for lambda_0 in lambda_0_candidates:
             
-            # Optimize auxiliary variables α* và Lagrangian multipliers μ*
-            alpha_star_opt, mu_star_opt = self._optimize_auxiliary_variables(
+            # Algorithm 1: CS-plug-in với M iterations
+            alpha_opt = self._optimize_auxiliary_variables(
                 expert_predictions, labels, head_classes, tail_classes, 
-                expert_weights, lambda_0, alpha_star, mu_star, c
+                expert_weights, lambda_0, group_weights, c
             )
             
-            # Compute cost-sensitive error với Bayes-optimal rejector
-            head_error, tail_error, rejection_rate = self._compute_bayes_optimal_error(
+            # Compute cost-sensitive error với optimized α
+            head_error, tail_error, rejection_rate = self._compute_bayes_optimal_error_with_alpha(
                 expert_predictions, labels, head_classes, tail_classes,
-                expert_weights, alpha_star_opt, mu_star_opt, c
+                expert_weights, alpha_opt, lambda_0, c
             )
             
             # Cost-sensitive error với group weights β
@@ -683,8 +683,7 @@ class MoEPluginOptimizer:
                 best_cost_sensitive_error = cost_sensitive_error
                 best_params = {
                     'lambda_0': lambda_0,
-                    'alpha_star': alpha_star_opt.tolist(),
-                    'mu_star': mu_star_opt.tolist(),
+                    'alpha_opt': alpha_opt.tolist(),
                     'expert_weights': expert_weights,
                     'cost_sensitive_error': cost_sensitive_error,
                     'head_error': head_error,
@@ -708,7 +707,7 @@ class MoEPluginOptimizer:
         return head_error, tail_error
     
     def _compute_group_error_with_params(self, expert_predictions, labels, group_mask, params):
-        """Tính error cho một group với parameters cụ thể theo đúng paper"""
+        """Tính error cho một group với parameters cụ thể sử dụng Bayes-optimal rejector"""
         
         if group_mask.sum() == 0:
             return 0.0
@@ -717,41 +716,44 @@ class MoEPluginOptimizer:
         group_predictions = {name: pred[group_mask] for name, pred in expert_predictions.items()}
         group_labels = labels[group_mask]
         
-        # Weighted ensemble prediction
-        ensemble_pred = torch.zeros_like(group_predictions['head_expert'])
-        for i, (name, weight) in enumerate(zip(['head_expert', 'balanced_expert', 'tail_expert'], params['expert_weights'])):
-            ensemble_pred += weight * group_predictions[name]
+        # Get full expert predictions for this group
+        full_expert_predictions = {name: pred[group_mask] for name, pred in expert_predictions.items()}
         
-        # Apply rejection rule
-        max_probs, predictions = torch.max(ensemble_pred, dim=1)
-        reject_mask = max_probs < params['alpha']
+        # Get group weights (assume equal for balanced error)
+        group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)
         
-        # Compute πk(r) = P(r(x) = 0, y ∈ Gk) for this group
-        non_rejected = ~reject_mask
-        pi_k = non_rejected.float().sum() / max(group_mask.sum().item(), 1)
+        # α̂k = αk^(m) / βk
+        alpha_hat = torch.tensor(params['alpha_opt']) / group_weights
         
-        # Compute P(y ≠ h(x), r(x) = 0, y ∈ Gk) for this group
-        errors = (predictions != group_labels) & non_rejected
+        # μ̂ = μ (scalar từ lambda_0)
+        mu_hat = torch.tensor([params['lambda_0'], 0.0], dtype=torch.float)
         
-        # Normalized error: (1/πk(r)) * P(y ≠ h(x), r(x) = 0, y ∈ Gk)
-        if pi_k > 1e-8:
-            normalized_error = errors.float().sum() / max(pi_k * group_mask.sum().item(), 1e-8)
-        else:
-            normalized_error = 0.0
+        # Apply Bayes-optimal rejector với optimized parameters
+        predictions, reject_mask = self._apply_bayes_optimal_rejector_with_params(
+            full_expert_predictions, group_labels, 
+            torch.tensor([True, False]), torch.tensor([False, True]),  # Simplified head/tail classes
+            params['expert_weights'], alpha_hat, mu_hat, 
+            self.config['cs_plugin']['rejection_penalty']
+        )
         
-        return normalized_error
+        # Compute error: P(y ≠ h(x), r(x) = 0, y ∈ Gk)
+        errors = (predictions != group_labels) & (~reject_mask)
+        error_rate = errors.float().sum() / max((~reject_mask).sum().item(), 1)
+        
+        return error_rate.item()
     
     def _compute_balanced_error(self, expert_predictions, labels, head_classes, tail_classes, params):
         """Tính balanced error theo đúng paper với equal group weights"""
         
-        # Equal group weights (1/2, 1/2) cho balanced error
-        equal_group_weights = torch.tensor([0.5, 0.5], dtype=torch.float)
-        
-        # Sử dụng cost-sensitive error với equal group weights
-        balanced_error = self._compute_cost_sensitive_error_with_weights(
-            expert_predictions, labels, params['expert_weights'], 
-            params['lambda_0'], params['alpha'], head_classes, tail_classes, equal_group_weights
+        # Compute balanced error với optimized α
+        head_error, tail_error, rejection_rate = self._compute_bayes_optimal_error_with_alpha(
+            expert_predictions, labels, head_classes, tail_classes,
+            params['expert_weights'], torch.tensor(params['alpha_opt']), params['lambda_0'], 
+            self.config['cs_plugin']['rejection_penalty']
         )
+        
+        # Balanced error = (head_error + tail_error) / 2
+        balanced_error = (head_error + tail_error) / 2
         
         return balanced_error
     
