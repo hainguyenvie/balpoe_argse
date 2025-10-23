@@ -274,10 +274,12 @@ class MoEPluginOptimizer:
         best_params = None
         best_balanced_error = float('inf')
         current_combination = 0
+        constrained_combinations = 0
+        total_valid_combinations = 0
         
-        # Add constraints for better optimization
-        min_tail_expert_weight = 0.1  # Minimum 10% weight for tail expert
-        min_balanced_expert_weight = 0.2  # Minimum 20% weight for balanced expert
+        # Add constraints for better optimization (relaxed)
+        min_tail_expert_weight = 0.05  # Minimum 5% weight for tail expert (relaxed)
+        min_balanced_expert_weight = 0.1  # Minimum 10% weight for balanced expert (relaxed)
         
         # Vòng lặp ngoài: Grid search cho expert weights với constraints
         for w_head in weight_search_space['w_head']:
@@ -293,9 +295,13 @@ class MoEPluginOptimizer:
                     
                     # Apply constraints - skip if tail expert gets too little weight
                     if expert_weights[2] < min_tail_expert_weight:
+                        constrained_combinations += 1
                         continue
                     if expert_weights[1] < min_balanced_expert_weight:
+                        constrained_combinations += 1
                         continue
+                    
+                    total_valid_combinations += 1
                     
                     # Vòng lặp trong: Grid search cho lambda_0
                     for lambda_0 in lambda_0_candidates:
@@ -335,18 +341,21 @@ class MoEPluginOptimizer:
         
         print(f"✅ CS-plugin optimization completed!")
         print(f"📊 Best balanced error: {best_balanced_error:.4f}")
+        print(f"📊 Constrained combinations: {constrained_combinations}")
+        print(f"📊 Valid combinations: {total_valid_combinations}")
+        
+        # Fallback: If no good solution found with constraints, try without constraints
+        if best_balanced_error > 0.8:  # If error is too high
+            print("⚠️  High error detected, trying fallback without constraints...")
+            return self._fallback_optimization(expert_predictions, labels, head_classes, tail_classes)
         
         return best_params
     
     def _find_optimal_alpha(self, expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes):
-        """Tìm alpha tối ưu bằng improved power iteration"""
+        """Tìm alpha tối ưu bằng improved power iteration với bounds"""
         
-        # Better initialization based on expert weights
-        # If tail expert has high weight, start with lower threshold
-        if expert_weights[2] > 0.3:  # Tail expert has significant weight
-            alpha = 0.3  # Lower threshold for tail-focused ensemble
-        else:
-            alpha = 0.5  # Standard threshold
+        # Better initialization - always start with reasonable alpha
+        alpha = 0.4  # Start with moderate threshold
         
         M = self.config['cs_plugin']['alpha_search_iterations']
         
@@ -356,13 +365,15 @@ class MoEPluginOptimizer:
                 expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
             )
             
-            # Improved update rule
-            if error > 0.5:  # High error, increase threshold
-                alpha = min(0.9, alpha + 0.1)
-            else:  # Low error, decrease threshold
-                alpha = max(0.1, alpha - 0.05)
+            # Improved update rule with bounds
+            if error > 0.6:  # High error, increase threshold
+                alpha = min(0.7, alpha + 0.05)  # Cap at 0.7
+            elif error < 0.3:  # Low error, decrease threshold
+                alpha = max(0.2, alpha - 0.05)  # Floor at 0.2
+            else:  # Moderate error, fine-tune
+                alpha = alpha + 0.01 * (0.5 - error)  # Small adjustments
             
-            alpha = max(0.0, min(1.0, alpha))  # Clamp to [0, 1]
+            alpha = max(0.2, min(0.7, alpha))  # Clamp to [0.2, 0.7] - reasonable range
         
         return alpha
     
@@ -391,17 +402,59 @@ class MoEPluginOptimizer:
         )
     
     def _compute_weight_penalty(self, weights):
-        """Compute penalty for extreme weight distributions"""
-        # Penalize if any expert gets too much weight (>80%)
+        """Compute penalty for extreme weight distributions (relaxed)"""
+        # Penalize if any expert gets too much weight (>90%) - relaxed from 80%
         max_weight = max(weights)
-        if max_weight > 0.8:
-            return (max_weight - 0.8) * 0.1  # Penalty for extreme weights
+        if max_weight > 0.9:
+            return (max_weight - 0.9) * 0.05  # Reduced penalty
         
-        # Penalize if tail expert gets too little weight (<5%)
-        if weights[2] < 0.05:
-            return (0.05 - weights[2]) * 0.2  # Penalty for ignoring tail expert
+        # Penalize if tail expert gets too little weight (<2%) - relaxed from 5%
+        if weights[2] < 0.02:
+            return (0.02 - weights[2]) * 0.1  # Reduced penalty
         
         return 0.0
+    
+    def _fallback_optimization(self, expert_predictions, labels, head_classes, tail_classes):
+        """Fallback optimization without constraints if main optimization fails"""
+        print("🔄 Running fallback optimization without constraints...")
+        
+        lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
+        weight_search_space = self.config['cs_plugin']['weight_search_space']
+        
+        best_params = None
+        best_balanced_error = float('inf')
+        
+        # Try all combinations without constraints
+        for w_head in weight_search_space['w_head']:
+            for w_balanced in weight_search_space['w_balanced']:
+                for w_tail in weight_search_space['w_tail']:
+                    total_weight = w_head + w_balanced + w_tail
+                    if total_weight == 0:
+                        continue
+                    
+                    expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
+                    
+                    for lambda_0 in lambda_0_candidates:
+                        alpha = self._find_optimal_alpha(
+                            expert_predictions, labels, expert_weights, lambda_0, head_classes, tail_classes
+                        )
+                        
+                        balanced_error = self._evaluate_balanced_error(
+                            expert_predictions, labels, expert_weights, lambda_0, alpha, head_classes, tail_classes
+                        )
+                        
+                        # No weight penalty in fallback
+                        if balanced_error < best_balanced_error:
+                            best_balanced_error = balanced_error
+                            best_params = {
+                                'lambda_0': lambda_0,
+                                'alpha': alpha,
+                                'expert_weights': expert_weights,
+                                'balanced_error': balanced_error
+                            }
+        
+        print(f"📊 Fallback best balanced error: {best_balanced_error:.4f}")
+        return best_params
     
     def worst_group_plugin_optimization(self, expert_predictions, labels, head_classes, tail_classes, cs_params):
         """
@@ -591,8 +644,10 @@ class MoEPluginOptimizer:
                 'weight_regularization': True,
                 'early_stopping': True,
                 'improved_alpha_finding': True,
-                'min_tail_expert_weight': 0.1,
-                'min_balanced_expert_weight': 0.2
+                'fallback_optimization': True,
+                'min_tail_expert_weight': 0.05,
+                'min_balanced_expert_weight': 0.1,
+                'alpha_bounds': [0.2, 0.7]
             }
         }
         
