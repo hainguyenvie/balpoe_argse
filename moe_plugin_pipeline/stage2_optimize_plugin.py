@@ -72,29 +72,39 @@ class MoEPluginOptimizer:
         
         # Split into validation (20%) and test (80%)
         val_split = self.config['dataset']['val_split']
-        total_samples = len(self.full_data_loader.sampler)
+        total_samples = len(self.full_data_loader.dataset)
         val_size = int(total_samples * val_split)
         
-        # Create validation subset
-        val_indices = torch.randperm(total_samples)[:val_size]
-        test_indices = torch.randperm(total_samples)[val_size:]
+        print(f"📊 Total samples: {total_samples}")
+        print(f"📊 Validation size: {val_size}")
+        print(f"📊 Test size: {total_samples - val_size}")
         
-        # Create validation data loader
-        val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
+        # Create single random permutation and split
+        all_indices = torch.randperm(total_samples)
+        val_indices = all_indices[:val_size]
+        test_indices = all_indices[val_size:]
+        
+        # Debug: Check indices range
+        print(f"🔍 Val indices range: {val_indices.min().item()} - {val_indices.max().item()}")
+        print(f"🔍 Test indices range: {test_indices.min().item()} - {test_indices.max().item()}")
+        print(f"🔍 Dataset size: {len(self.full_data_loader.dataset)}")
+        
+        # Create validation data loader using Subset
+        val_subset = torch.utils.data.Subset(self.full_data_loader.dataset, val_indices)
         self.val_data_loader = torch.utils.data.DataLoader(
-            self.full_data_loader.dataset,
+            val_subset,
             batch_size=256,
-            sampler=val_sampler,
-            num_workers=4
+            shuffle=False,
+            num_workers=0  # Set to 0 to avoid multiprocessing issues
         )
         
-        # Create test data loader
-        test_sampler = torch.utils.data.SubsetRandomSampler(test_indices)
+        # Create test data loader using Subset
+        test_subset = torch.utils.data.Subset(self.full_data_loader.dataset, test_indices)
         self.test_data_loader = torch.utils.data.DataLoader(
-            self.full_data_loader.dataset,
+            test_subset,
             batch_size=256,
-            sampler=test_sampler,
-            num_workers=4
+            shuffle=False,
+            num_workers=0  # Set to 0 to avoid multiprocessing issues
         )
         
         print(f"✅ Validation samples: {len(val_indices)}")
