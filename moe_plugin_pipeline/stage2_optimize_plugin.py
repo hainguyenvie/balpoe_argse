@@ -246,51 +246,42 @@ class MoEPluginOptimizer:
         
         # Grid search parameters
         lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
-        weight_search_space = self.config['cs_plugin']['weight_search_space']
+        
+        # Equal weights cho experts (như paper BalPoE gốc)
+        expert_weights = [1.0/3, 1.0/3, 1.0/3]  # Equal weights cho 3 experts
         
         best_params = None
         best_balanced_error = float('inf')
         
-        # Vòng lặp ngoài: Grid search cho expert weights
-        for w_head in weight_search_space['w_head']:
-            for w_balanced in weight_search_space['w_balanced']:
-                for w_tail in weight_search_space['w_tail']:
-                    
-                    # Normalize weights
-                    total_weight = w_head + w_balanced + w_tail
-                    if total_weight == 0:
-                        continue
-                    
-                    expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
-                    
-                    # Vòng lặp trong: Grid search cho lambda_0
-                    for lambda_0 in lambda_0_candidates:
-                        
-                        # Tìm alpha tối ưu bằng power iteration
-                        alpha = self._find_optimal_alpha(
-                            expert_predictions, labels, 
-                            expert_weights, lambda_0, head_classes, tail_classes
-                        )
-                        
-                        # Đánh giá balanced error
-                        balanced_error = self._evaluate_balanced_error(
-                            expert_predictions, labels,
-                            expert_weights, lambda_0, alpha, head_classes, tail_classes
-                        )
-                        
-                        if balanced_error < best_balanced_error:
-                            best_balanced_error = balanced_error
-                            best_params = {
-                                'lambda_0': lambda_0,
-                                'alpha': alpha,
-                                'expert_weights': expert_weights,
-                                'balanced_error': balanced_error
-                            }
-                            
-                            print(f"    ✅ New best: balanced_error = {balanced_error:.4f}")
+        # Chỉ grid search cho lambda_0 (không cần search expert weights)
+        for lambda_0 in lambda_0_candidates:
+            
+            # Tìm alpha tối ưu bằng power iteration
+            alpha = self._find_optimal_alpha(
+                expert_predictions, labels, 
+                expert_weights, lambda_0, head_classes, tail_classes
+            )
+            
+            # Đánh giá balanced error
+            balanced_error = self._evaluate_balanced_error(
+                expert_predictions, labels,
+                expert_weights, lambda_0, alpha, head_classes, tail_classes
+            )
+            
+            if balanced_error < best_balanced_error:
+                best_balanced_error = balanced_error
+                best_params = {
+                    'lambda_0': lambda_0,
+                    'alpha': alpha,
+                    'expert_weights': expert_weights,
+                    'balanced_error': balanced_error
+                }
+                
+                print(f"    ✅ New best: balanced_error = {balanced_error:.4f}")
         
         print(f"✅ CS-plugin optimization completed!")
         print(f"📊 Best balanced error: {best_balanced_error:.4f}")
+        print(f"📊 Expert weights (equal): {expert_weights}")
         
         return best_params
     
@@ -430,46 +421,36 @@ class MoEPluginOptimizer:
         
         # Grid search parameters
         lambda_0_candidates = self.config['cs_plugin']['lambda_0_candidates']
-        weight_search_space = self.config['cs_plugin']['weight_search_space']
+        
+        # Equal weights cho experts (như paper BalPoE gốc)
+        expert_weights = [1.0/3, 1.0/3, 1.0/3]  # Equal weights cho 3 experts
         
         best_params = None
         best_cost_sensitive_error = float('inf')
         
-        # Grid search cho expert weights
-        for w_head in weight_search_space['w_head']:
-            for w_balanced in weight_search_space['w_balanced']:
-                for w_tail in weight_search_space['w_tail']:
-                    
-                    # Normalize weights
-                    total_weight = w_head + w_balanced + w_tail
-                    if total_weight == 0:
-                        continue
-                    
-                    expert_weights = [w_head/total_weight, w_balanced/total_weight, w_tail/total_weight]
-                    
-                    # Grid search cho lambda_0
-                    for lambda_0 in lambda_0_candidates:
-                        
-                        # Tìm alpha tối ưu với group weights β⁽ᵗ⁾
-                        alpha = self._find_optimal_alpha(
-                            expert_predictions, labels, 
-                            expert_weights, lambda_0, head_classes, tail_classes, group_weights
-                        )
-                        
-                        # Đánh giá cost-sensitive error với β⁽ᵗ⁾
-                        cost_sensitive_error = self._compute_cost_sensitive_error_with_weights(
-                            expert_predictions, labels,
-                            expert_weights, lambda_0, alpha, head_classes, tail_classes, group_weights
-                        )
-                        
-                        if cost_sensitive_error < best_cost_sensitive_error:
-                            best_cost_sensitive_error = cost_sensitive_error
-                            best_params = {
-                                'lambda_0': lambda_0,
-                                'alpha': alpha,
-                                'expert_weights': expert_weights,
-                                'cost_sensitive_error': cost_sensitive_error
-                            }
+        # Chỉ grid search cho lambda_0 (không cần search expert weights)
+        for lambda_0 in lambda_0_candidates:
+            
+            # Tìm alpha tối ưu với group weights β⁽ᵗ⁾
+            alpha = self._find_optimal_alpha(
+                expert_predictions, labels, 
+                expert_weights, lambda_0, head_classes, tail_classes, group_weights
+            )
+            
+            # Đánh giá cost-sensitive error với β⁽ᵗ⁾
+            cost_sensitive_error = self._compute_cost_sensitive_error_with_weights(
+                expert_predictions, labels,
+                expert_weights, lambda_0, alpha, head_classes, tail_classes, group_weights
+            )
+            
+            if cost_sensitive_error < best_cost_sensitive_error:
+                best_cost_sensitive_error = cost_sensitive_error
+                best_params = {
+                    'lambda_0': lambda_0,
+                    'alpha': alpha,
+                    'expert_weights': expert_weights,
+                    'cost_sensitive_error': cost_sensitive_error
+                }
         
         return best_params
     
