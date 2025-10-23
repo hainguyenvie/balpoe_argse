@@ -158,14 +158,55 @@ class MoEPluginGatingOptimizer:
         
         return self.expert_models
     
+    def _detect_feature_dimension(self):
+        """Detect feature dimension từ BalPoE model"""
+        print("🔍 Detecting feature dimension...")
+        
+        # Get a sample batch
+        sample_batch = next(iter(self.val_data_loader))
+        sample_data, _ = sample_batch
+        sample_data = sample_data[:1]  # Just one sample
+        
+        # Get features from balanced expert
+        with torch.no_grad():
+            balanced_output = self.expert_models['balanced_expert'](sample_data)
+            
+            if isinstance(balanced_output, dict) and 'feat' in balanced_output:
+                features = balanced_output['feat']
+            else:
+                # Fallback: try to get features from model
+                try:
+                    features = self.expert_models['balanced_expert'].get_features(sample_data)
+                except:
+                    # If no get_features method, use the last layer before classifier
+                    # This is a simplified approach - might need adjustment based on actual model
+                    features = balanced_output['output'] if isinstance(balanced_output, dict) else balanced_output
+        
+        # Get feature dimension
+        if len(features.shape) > 2:
+            # If features are 2D+ (e.g., [batch, seq, dim]), flatten
+            features = features.view(features.size(0), -1)
+        
+        feature_dim = features.shape[1]
+        print(f"📊 Feature shape: {features.shape}")
+        print(f"📊 Feature dimension: {feature_dim}")
+        
+        return feature_dim
+    
     def train_gating_network(self):
         """Train Gating Network để học expert weights"""
         print("🧠 Training Gating Network...")
         
-        # Create gating network
-        gating_config = self.config['gating_network']
+        # First, detect feature dimension from a sample
+        feature_dim = self._detect_feature_dimension()
+        print(f"🔍 Detected feature dimension: {feature_dim}")
+        
+        # Create gating network with detected dimension
+        gating_config = self.config['gating_network'].copy()
+        gating_config['input_dim'] = feature_dim  # Override with detected dimension
+        
         self.gating_network = create_gating_network(
-            input_dim=gating_config['input_dim'],
+            input_dim=feature_dim,
             config=gating_config
         )
         
@@ -233,8 +274,16 @@ class MoEPluginGatingOptimizer:
                 if isinstance(balanced_output, dict) and 'feat' in balanced_output:
                     features = balanced_output['feat']
                 else:
-                    # Fallback: use last layer before classifier
-                    features = self.expert_models['balanced_expert'].get_features(batch_data)
+                    # Fallback: try to get features from model
+                    try:
+                        features = self.expert_models['balanced_expert'].get_features(batch_data)
+                    except:
+                        # If no get_features method, use the last layer before classifier
+                        features = balanced_output['output'] if isinstance(balanced_output, dict) else balanced_output
+                
+                # Ensure features are 2D
+                if len(features.shape) > 2:
+                    features = features.view(features.size(0), -1)
                 
                 # Get gating weights
                 expert_weights = self.gating_network(features)  # [batch_size, 3]

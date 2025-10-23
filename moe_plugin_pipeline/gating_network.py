@@ -190,8 +190,16 @@ class GatingNetworkTrainer:
                 if isinstance(balanced_output, dict) and 'feat' in balanced_output:
                     features = balanced_output['feat']
                 else:
-                    # Fallback: use last layer before classifier
-                    features = expert_models['balanced_expert'].get_features(batch_data)
+                    # Fallback: try to get features from model
+                    try:
+                        features = expert_models['balanced_expert'].get_features(batch_data)
+                    except:
+                        # If no get_features method, use the last layer before classifier
+                        features = balanced_output['output'] if isinstance(balanced_output, dict) else balanced_output
+                
+                # Ensure features are 2D
+                if len(features.shape) > 2:
+                    features = features.view(features.size(0), -1)
             
             # Forward pass through gating network
             expert_weights = self.gating_network(features)
